@@ -1,6 +1,7 @@
 name: biolumi_calcium_cli
 channels:
   - conda-forge
+  - bioconda
   - defaults
 dependencies:
   - python=3.10
@@ -16,5 +17,6 @@ dependencies:
   - jupyter
   - ipython
   - pip
+  - snakemake
   - pip:
       - ipympl
