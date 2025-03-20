@@ -1,0 +1,20 @@
+name: biolumi_calcium_cli
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - scikit-image
+  - opencv
+  - tifffile
+  - imageio
+  - pillow
+  - jupyter
+  - ipython
+  - pip
+  - pip:
+      - ipympl
