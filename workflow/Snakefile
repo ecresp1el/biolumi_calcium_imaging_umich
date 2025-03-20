@@ -7,7 +7,7 @@ WORKFLOW_DIR = os.path.abspath(os.path.dirname(__file__))
 # ✅ Get the absolute path of the GitHub repository (codebase)
 CODEBASE_DIR = os.path.abspath(os.path.join(WORKFLOW_DIR, ".."))
 
-# ✅ Detect if Snakemake is running inside Conda's site-packages and exit if true
+# ✅ Stop execution if Snakemake is running inside Conda's `site-packages`
 if "site-packages" in WORKFLOW_DIR:
     print("❌ ERROR: Snakemake is running inside Conda's site-packages instead of your GitHub repository!")
     print(f"➡️  Please navigate to {CODEBASE_DIR} and run Snakemake again.")
