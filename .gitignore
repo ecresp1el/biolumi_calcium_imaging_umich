@@ -1,6 +1,10 @@
+# Ignore compiled Python files
 __pycache__/
 *.pyc
-*.pyo
-data/raw/*
-data/processed/*
-data/results/*
+
+# Ignore Snakemake logs and temporary files
+workflow/logs/
+workflow/.snakemake/
+workflow/results/
+
+
