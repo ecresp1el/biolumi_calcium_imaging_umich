@@ -8,7 +8,7 @@ def get_user_input(prompt, default=None):
     return response
 
 # 🏗️ Function to create a structured project directory
-def create_directory_structure(project_root, num_groups=2, recordings_per_group=2):
+def create_directory_structure(project_root, group_info):
     """Creates a standardized directory structure for calcium imaging projects."""
     
     # Ensure the project root directory exists
@@ -17,14 +17,11 @@ def create_directory_structure(project_root, num_groups=2, recordings_per_group=
     # Store project configuration in a dictionary
     project_config = {
         "project_root": project_root,
-        "num_groups": num_groups,
-        "recordings_per_group": recordings_per_group,
         "groups": []
     }
 
     # 🔹 Loop through each group to create folders
-    for g in range(1, num_groups + 1):
-        group_name = f"group_{g:03d}"
+    for group_name, recordings_per_group in group_info.items():
         group_path = os.path.join(project_root, group_name)
         os.makedirs(group_path, exist_ok=True)
 
@@ -65,7 +62,6 @@ def create_directory_structure(project_root, num_groups=2, recordings_per_group=
         json.dump(project_config, json_file, indent=4)
 
     print(f"✅ Project structure created at: {project_root}")
-    print(f"📁 Groups: {num_groups}, 📁 Recordings per group: {recordings_per_group}")
     print(f"🔧 Configuration saved in: {config_path}")
 
 # 🎯 Main function to prompt user input and create the directory
@@ -76,10 +72,15 @@ def main():
     # Get user input for project setup
     project_root = get_user_input("Enter project directory name", "biolumi_project")
     num_groups = int(get_user_input("How many groups?", "2"))
-    recordings_per_group = int(get_user_input("How many recordings per group?", "2"))
+
+    group_info = {}
+    for i in range(1, num_groups + 1):
+        group_name = get_user_input(f"Enter name for group {i}", f"group_{i:03d}")
+        recordings_per_group = int(get_user_input(f"How many recordings for {group_name}?", "2"))
+        group_info[group_name] = recordings_per_group
 
     # Call function to create the structured directory tree
-    create_directory_structure(project_root, num_groups, recordings_per_group)
+    create_directory_structure(project_root, group_info)
 
 # 🚀 Run the script when executed
 if __name__ == "__main__":
