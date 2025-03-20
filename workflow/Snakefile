@@ -1,33 +1,38 @@
 import os
-
-# ✅ Get the absolute path of the workflow directory
-WORKFLOW_DIR = os.path.abspath(os.path.dirname(__file__))
-
-# ✅ Get the absolute path of the GitHub repository (codebase)
-CODEBASE_DIR = os.path.abspath(os.path.join(WORKFLOW_DIR, ".."))
-
-# ✅ Get the correct path to `setup_project.py` inside your GitHub repo
-SETUP_SCRIPT = os.path.join(CODEBASE_DIR, "scripts", "setup_project.py")
+import json
 
 # 🔹 Ask the user for the external project folder where data will be stored
-PROJECT_FOLDER = input("📂 Enter the full path of your project folder: ").strip()
+PROJECT_FOLDER = input("📂 Enter the full path of your project folder (e.g., /Users/ecrespo/Desktop/my_project): ").strip()
 
-# ✅ Define the correct path for `config.json` inside the separate project folder
+# ✅ Ensure the project folder exists and set up structure
+if not os.path.exists(PROJECT_FOLDER):
+    os.makedirs(PROJECT_FOLDER, exist_ok=True)
+
+# ✅ Define the correct path for `config.json` inside the external project folder
 CONFIG_FILE = os.path.join(PROJECT_FOLDER, "config.json")
 
 # 🔍 Print debug information
 print(f"🟢 DEBUG INFO:")
-print(f"  - Workflow directory: {WORKFLOW_DIR}")
-print(f"  - Codebase directory: {CODEBASE_DIR}")
-print(f"  - Setup script path: {SETUP_SCRIPT}")
-print(f"  - Project folder: {PROJECT_FOLDER}")
+print(f"  - External Project Folder: {PROJECT_FOLDER}")
 print(f"  - Config file path: {CONFIG_FILE}")
 
 # ✅ Snakemake Rule: Ensure `config.json` is created inside the external project folder
 rule setup_project:
     output: CONFIG_FILE
-    shell:
-        "python {SETUP_SCRIPT} --project_folder {PROJECT_FOLDER}"  # ✅ Runs in the correct directory
+    run:
+        import json
+        import os
+        config_data = {
+            "project_root": PROJECT_FOLDER,
+            "status": "initialized"
+        }
+        subdirs = ["raw", "metadata", "processed", "analysis", "figures"]
+        for sub in subdirs:
+            os.makedirs(os.path.join(PROJECT_FOLDER, sub), exist_ok=True)
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config_data, f, indent=4)
+        print(f"✅ Project initialized at: {PROJECT_FOLDER}")
+        print(f"✅ Config file created at: {CONFIG_FILE}")
 
 rule all:
     input:
