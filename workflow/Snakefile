@@ -1,5 +1,4 @@
 import os
-import json
 
 # ✅ Get the absolute path of the workflow directory
 WORKFLOW_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -7,21 +6,11 @@ WORKFLOW_DIR = os.path.abspath(os.path.dirname(__file__))
 # ✅ Get the absolute path of the GitHub repository (codebase)
 CODEBASE_DIR = os.path.abspath(os.path.join(WORKFLOW_DIR, ".."))
 
-# ✅ Stop execution if Snakemake is running inside Conda's `site-packages`
-if "site-packages" in WORKFLOW_DIR:
-    print("❌ ERROR: Snakemake is running inside Conda's site-packages instead of your GitHub repository!")
-    print(f"➡️  Please navigate to {CODEBASE_DIR} and run Snakemake again.")
-    exit(1)
-
 # ✅ Get the correct path to `setup_project.py` inside your GitHub repo
 SETUP_SCRIPT = os.path.join(CODEBASE_DIR, "scripts", "setup_project.py")
 
 # 🔹 Ask the user for the external project folder where data will be stored
-PROJECT_FOLDER = input("📂 Enter the full path of your project folder (e.g., /Users/yourname/my_project): ").strip()
-
-# ✅ Ensure the project folder exists
-if not os.path.exists(PROJECT_FOLDER):
-    os.makedirs(PROJECT_FOLDER, exist_ok=True)
+PROJECT_FOLDER = input("📂 Enter the full path of your project folder: ").strip()
 
 # ✅ Define the correct path for `config.json` inside the separate project folder
 CONFIG_FILE = os.path.join(PROJECT_FOLDER, "config.json")
@@ -29,21 +18,17 @@ CONFIG_FILE = os.path.join(PROJECT_FOLDER, "config.json")
 # 🔍 Print debug information
 print(f"🟢 DEBUG INFO:")
 print(f"  - Workflow directory: {WORKFLOW_DIR}")
-print(f"  - Codebase (GitHub Repo) directory: {CODEBASE_DIR}")
+print(f"  - Codebase directory: {CODEBASE_DIR}")
 print(f"  - Setup script path: {SETUP_SCRIPT}")
-print(f"  - Project folder for data: {PROJECT_FOLDER}")
+print(f"  - Project folder: {PROJECT_FOLDER}")
 print(f"  - Config file path: {CONFIG_FILE}")
 
 # ✅ Snakemake Rule: Ensure `config.json` is created inside the external project folder
 rule setup_project:
     output: CONFIG_FILE
     shell:
-        "cd {CODEBASE_DIR} && python scripts/setup_project.py --project_folder {PROJECT_FOLDER}"  # ✅ Ensures it runs in the correct directory
+        "python {SETUP_SCRIPT} --project_folder {PROJECT_FOLDER}"  # ✅ Runs in the correct directory
 
 rule all:
     input:
-        CONFIG_FILE,
-        os.path.join(PROJECT_FOLDER, "results/processed_images.txt")  # ✅ Prevents Snakemake from deleting the project folder
-
-include: "rules/preprocess.smk"
-include: "rules/postprocess.smk"
+        CONFIG_FILE  # ✅ Ensures project folder is set up before running any other rules
