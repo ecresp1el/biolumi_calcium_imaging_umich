@@ -1,0 +1,3 @@
+# Configuration file for Snakemake workflow
+project_folder: "biolumi_project"
+output_folder: "biolumi_project/processed_data"

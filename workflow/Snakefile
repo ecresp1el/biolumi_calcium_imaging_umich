@@ -1,0 +1,7 @@
+rule all:
+    input:
+        "workflow/results/processed_images.txt"
+
+include: "workflow/rules/setup.smk"
+include: "workflow/rules/preprocess.smk"
+include: "workflow/rules/postprocess.smk"
