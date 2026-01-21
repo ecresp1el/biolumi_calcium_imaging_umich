@@ -39,6 +39,23 @@ After setting up the structure, you can process images.
 
 To verify that everything works correctly, run:
 
+🧠 Manual ROI Annotation with Napari
+
+Use the Napari helper script to open a motion-corrected TIFF movie and a max
+projection image, then draw/save manual ROI labels (3D labels matching the
+movie time axis).
+
+Example usage:
+
+```
+python -m BL_CalciumAnalysis.napari_roi_cli \
+  --movie /path/to/motion_corrected.tif \
+  --max-projection /path/to/max_projection.tif \
+  --roi /path/to/roi_masks_uint16.tif \
+  --save-roi /path/to/roi_masks_uint16.tif \
+  --strict
+```
+
 🚀 Future Enhancements
 
 Automate metadata collection.
