@@ -22,7 +22,11 @@ def _write_tiff(path: Path, data: np.ndarray) -> None:
     tifffile.imwrite(str(path), data)
 
 
-def _validate_roi_shape(roi_data: np.ndarray, movie_data: np.ndarray, strict: bool) -> None:
+def _validate_roi_shape(
+    roi_data: np.ndarray,
+    movie_data: np.ndarray,
+    strict: bool,
+) -> None:
     if roi_data.ndim not in {2, 3}:
         msg = f"ROI must be 2D or 3D, got shape {roi_data.shape}"
         if strict:
