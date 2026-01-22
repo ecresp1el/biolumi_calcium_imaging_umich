@@ -13,6 +13,8 @@ dependencies:
   - scikit-image
   - tifffile
   - imageio
+  - h5py
+  - caiman
   - dask
   - vispy
   - pyopengl
