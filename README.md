@@ -78,6 +78,19 @@ python -m BL_CalciumAnalysis.preprocess_cli \
   --output-root "/path/to/project_root"
 ```
 
+🖥️ ROI Curation Tracker (GUI)
+
+Use the GUI to track which recordings still need ROI work and launch Napari
+directly for a selected recording. The GUI reads `processing_manifest.json`
+files created by preprocessing.
+
+Example usage:
+
+```
+python -m BL_CalciumAnalysis.roi_gui \
+  --project-root "/path/to/project_root"
+```
+
 🚀 Future Enhancements
 
 Automate metadata collection.
