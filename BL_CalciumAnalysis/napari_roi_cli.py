@@ -22,11 +22,27 @@ def _write_tiff(path: Path, data: np.ndarray) -> None:
     tifffile.imwrite(str(path), data)
 
 
-def _validate_roi_shape(
-    roi_data: np.ndarray,
-    movie_data: np.ndarray,
-    strict: bool,
-) -> None:
+def _summarize_roi_labels(roi_data: np.ndarray) -> str:
+    unique_labels = np.unique(roi_data)
+    roi_ids = unique_labels[unique_labels != 0]
+    roi_count = int(roi_ids.size)
+    if roi_data.ndim == 3:
+        axis_hint = "(T, Y, X)"
+    elif roi_data.ndim == 2:
+        axis_hint = "(Y, X)"
+    else:
+        axis_hint = "unknown"
+
+    return (
+        "✅ ROI labels saved.\n"
+        f"📐 Shape: {roi_data.shape} (axis order {axis_hint})\n"
+        f"🔢 Dtype: {roi_data.dtype}\n"
+        f"🎯 ROI count (nonzero labels): {roi_count}\n"
+        f"🏷 Labels (nonzero): {roi_ids.tolist()}"
+    )
+
+
+def _validate_roi_shape(roi_data: np.ndarray, movie_data: np.ndarray, strict: bool) -> None:
     if roi_data.ndim not in {2, 3}:
         msg = f"ROI must be 2D or 3D, got shape {roi_data.shape}"
         if strict:
@@ -75,6 +91,8 @@ def launch_napari_roi_tool(
         labels_layer = viewer.layers["roi_labels"]
         labels_data = np.asarray(labels_layer.data)
         _write_tiff(save_path, labels_data)
+        print(_summarize_roi_labels(labels_data))
+        print(f"📁 Saved to: {save_path}")
 
 
 def main() -> None:
