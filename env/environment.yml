@@ -1,22 +1,23 @@
-name: biolumi_calcium_cli
+name: napari-env
+
 channels:
   - conda-forge
-  - bioconda
-  - defaults
+
 dependencies:
   - python=3.10
+  - napari=0.4.*
+  - pyqt=5.15.*
+  - qt-main
   - numpy
-  - pandas
-  - matplotlib
   - scipy
   - scikit-image
-  - opencv
   - tifffile
   - imageio
-  - pillow
-  - jupyter
-  - ipython
+  - h5py
+  - caiman
+  - dask
+  - vispy
+  - pyopengl
+  - pandas
+  - matplotlib
   - pip
-  - snakemake
-  - pip:
-      - ipympl
