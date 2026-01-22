@@ -103,13 +103,17 @@ def main() -> None:
     )
 
     ims_paths = _collect_ims_paths(args.ims)
-    for ims_path in ims_paths:
+    total = len(ims_paths)
+    print(f"[preprocess] Found {total} recording(s) to process.")
+    for idx, ims_path in enumerate(ims_paths, start=1):
+        print(f"[preprocess] Starting recording {idx} of {total}: {ims_path}")
         pipeline = MotionCorrectionPipeline(
             ims_path=ims_path,
             output_root=args.output_root,
             config=config,
         )
         pipeline.run()
+        print(f"[preprocess] Finished recording {idx} of {total}: {ims_path}")
 
 
 if __name__ == "__main__":
