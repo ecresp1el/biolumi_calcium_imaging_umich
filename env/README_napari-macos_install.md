@@ -10,7 +10,6 @@ tested on both **Apple silicon (M1/M2/M3)** and **Intel Macs**.
 - macOS (Intel or Apple silicon)
 - Conda distribution:
   - Miniconda (recommended)
-  - Miniforge (recommended for labs)
   - Anaconda (works, but larger)
 
 > ⚠️ Windows and Linux require separate environment files.
@@ -19,12 +18,12 @@ tested on both **Apple silicon (M1/M2/M3)** and **Intel Macs**.
 
 ## Installation (fresh environment)
 
-From the directory containing `napari-macos.yml`:
+From the directory containing `environment.yml`:
 
 ```bash
-conda env create -f napari-macos.yml
+conda env create -f environment.yml
 
 
 ## if you need to create a fresh env: 
 conda remove -n napari-env --all
-conda env create -f napari-macos.yml
+conda env create -f environment.yml
