@@ -16,13 +16,25 @@ from tkinter import messagebox, ttk
 class RecordingEntry:
     name: str
     manifest_path: Path
-    motion_corrected_tiff: Path
-    max_projection_tiff: Path
+    motion_corrected_tiff: Path | None
+    max_projection_tiff: Path | None
     roi_path: Path
 
     @property
     def roi_exists(self) -> bool:
         return self.roi_path.exists()
+
+    @property
+    def motion_corrected_exists(self) -> bool:
+        return self.motion_corrected_tiff is not None and self.motion_corrected_tiff.exists()
+
+    @property
+    def max_projection_exists(self) -> bool:
+        return self.max_projection_tiff is not None and self.max_projection_tiff.exists()
+
+    @property
+    def ready_for_roi(self) -> bool:
+        return self.motion_corrected_exists and self.max_projection_exists
 
 
 def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
@@ -35,11 +47,11 @@ def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
     recording_name = ims_path.stem if ims_path.suffix else manifest_path.parent.name
     paths = payload.get("paths", {})
 
-    motion_corrected = Path(paths.get("motion_corrected_tiff", ""))
-    max_projection = Path(paths.get("max_projection", ""))
+    motion_corrected_raw = paths.get("motion_corrected_tiff")
+    max_projection_raw = paths.get("max_projection")
 
-    if not motion_corrected.exists() or not max_projection.exists():
-        return None
+    motion_corrected = Path(motion_corrected_raw) if motion_corrected_raw else None
+    max_projection = Path(max_projection_raw) if max_projection_raw else None
 
     roi_path = manifest_path.parent / "rois" / f"{recording_name}_roi_masks_uint16.tif"
 
@@ -68,9 +80,12 @@ class RoiTrackerApp(ttk.Frame):
         self.project_root = project_root
         self.pending_entries: list[RecordingEntry] = []
         self.completed_entries: list[RecordingEntry] = []
+        self.missing_entries: list[RecordingEntry] = []
         self.pending_listbox = tk.Listbox(self, height=12, exportselection=False)
         self.completed_listbox = tk.Listbox(self, height=12, exportselection=False)
+        self.missing_listbox = tk.Listbox(self, height=12, exportselection=False)
         self.detail_text = tk.Text(self, height=6, width=70, state="disabled")
+        self.summary_label = ttk.Label(self, text="")
         self._selected_entry: RecordingEntry | None = None
         self._build_layout()
         self.refresh()
@@ -84,39 +99,51 @@ class RoiTrackerApp(ttk.Frame):
         self.master.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
+        self.columnconfigure(2, weight=1)
+
+        self.summary_label.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
         pending_frame = ttk.LabelFrame(self, text="Needs ROI")
         completed_frame = ttk.LabelFrame(self, text="ROI Complete")
-        pending_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        completed_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        missing_frame = ttk.LabelFrame(self, text="Missing Inputs")
+        pending_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        completed_frame.grid(row=1, column=1, sticky="nsew", padx=(0, 8))
+        missing_frame.grid(row=1, column=2, sticky="nsew")
         pending_frame.columnconfigure(0, weight=1)
         completed_frame.columnconfigure(0, weight=1)
+        missing_frame.columnconfigure(0, weight=1)
 
         pending_scroll = ttk.Scrollbar(pending_frame, orient="vertical", command=self.pending_listbox.yview)
         completed_scroll = ttk.Scrollbar(
             completed_frame, orient="vertical", command=self.completed_listbox.yview
         )
+        missing_scroll = ttk.Scrollbar(missing_frame, orient="vertical", command=self.missing_listbox.yview)
         self.pending_listbox.configure(yscrollcommand=pending_scroll.set)
         self.completed_listbox.configure(yscrollcommand=completed_scroll.set)
+        self.missing_listbox.configure(yscrollcommand=missing_scroll.set)
 
         self.pending_listbox.grid(row=0, column=0, sticky="nsew")
         pending_scroll.grid(row=0, column=1, sticky="ns")
         self.completed_listbox.grid(row=0, column=0, sticky="nsew")
         completed_scroll.grid(row=0, column=1, sticky="ns")
+        self.missing_listbox.grid(row=0, column=0, sticky="nsew")
+        missing_scroll.grid(row=0, column=1, sticky="ns")
 
         pending_frame.rowconfigure(0, weight=1)
         completed_frame.rowconfigure(0, weight=1)
+        missing_frame.rowconfigure(0, weight=1)
 
         self.pending_listbox.bind("<<ListboxSelect>>", lambda _: self._on_select("pending"))
         self.completed_listbox.bind("<<ListboxSelect>>", lambda _: self._on_select("completed"))
+        self.missing_listbox.bind("<<ListboxSelect>>", lambda _: self._on_select("missing"))
 
         detail_frame = ttk.LabelFrame(self, text="Recording Details")
-        detail_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        detail_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(12, 0))
         detail_frame.columnconfigure(0, weight=1)
         self.detail_text.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
         button_frame = ttk.Frame(self)
-        button_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        button_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(12, 0))
         button_frame.columnconfigure(0, weight=1)
 
         ttk.Button(button_frame, text="Refresh", command=self.refresh).grid(row=0, column=0, sticky="w")
@@ -129,18 +156,36 @@ class RoiTrackerApp(ttk.Frame):
 
     def refresh(self) -> None:
         entries = load_recordings(self.project_root)
-        self.pending_entries = [entry for entry in entries if not entry.roi_exists]
+        self.pending_entries = [entry for entry in entries if entry.ready_for_roi and not entry.roi_exists]
         self.completed_entries = [entry for entry in entries if entry.roi_exists]
+        self.missing_entries = [entry for entry in entries if not entry.ready_for_roi]
 
         self.pending_listbox.delete(0, tk.END)
         self.completed_listbox.delete(0, tk.END)
+        self.missing_listbox.delete(0, tk.END)
 
         for entry in self.pending_entries:
             self.pending_listbox.insert(tk.END, entry.name)
         for entry in self.completed_entries:
             self.completed_listbox.insert(tk.END, entry.name)
+        for entry in self.missing_entries:
+            self.missing_listbox.insert(tk.END, entry.name)
 
-        self._set_detail_text("Select a recording to view details.")
+        summary = (
+            f"Found {len(entries)} recording(s) • "
+            f"Needs ROI: {len(self.pending_entries)} • "
+            f"ROI Complete: {len(self.completed_entries)} • "
+            f"Missing Inputs: {len(self.missing_entries)}"
+        )
+        self.summary_label.configure(text=summary)
+
+        if not entries:
+            self._set_detail_text(
+                "No recordings found. Make sure you selected the project root that contains "
+                "processing_manifest.json files."
+            )
+        else:
+            self._set_detail_text("Select a recording to view details.")
         self._selected_entry = None
 
     def _set_detail_text(self, text: str) -> None:
@@ -154,10 +199,17 @@ class RoiTrackerApp(ttk.Frame):
             selection = self.pending_listbox.curselection()
             entries = self.pending_entries
             self.completed_listbox.selection_clear(0, tk.END)
-        else:
+            self.missing_listbox.selection_clear(0, tk.END)
+        elif list_name == "completed":
             selection = self.completed_listbox.curselection()
             entries = self.completed_entries
             self.pending_listbox.selection_clear(0, tk.END)
+            self.missing_listbox.selection_clear(0, tk.END)
+        else:
+            selection = self.missing_listbox.curselection()
+            entries = self.missing_entries
+            self.pending_listbox.selection_clear(0, tk.END)
+            self.completed_listbox.selection_clear(0, tk.END)
 
         if not selection:
             return
@@ -165,13 +217,18 @@ class RoiTrackerApp(ttk.Frame):
         index = selection[0]
         entry = entries[index]
         self._selected_entry = entry
+        motion_corrected = entry.motion_corrected_tiff or Path("<missing>")
+        max_projection = entry.max_projection_tiff or Path("<missing>")
+        status = "✅ complete" if entry.roi_exists else "⚠️ missing"
+        inputs_status = "ready" if entry.ready_for_roi else "missing inputs"
         detail = (
             f"Recording: {entry.name}\n"
             f"Manifest: {entry.manifest_path}\n"
-            f"Motion-corrected: {entry.motion_corrected_tiff}\n"
-            f"Max projection: {entry.max_projection_tiff}\n"
+            f"Motion-corrected: {motion_corrected}\n"
+            f"Max projection: {max_projection}\n"
             f"ROI file: {entry.roi_path}\n"
-            f"ROI status: {'✅ complete' if entry.roi_exists else '⚠️ missing'}"
+            f"ROI status: {status}\n"
+            f"Inputs status: {inputs_status}"
         )
         self._set_detail_text(detail)
 
@@ -179,6 +236,12 @@ class RoiTrackerApp(ttk.Frame):
         entry = self._selected_entry
         if entry is None:
             messagebox.showinfo("ROI Editor", "Select a recording first.")
+            return
+        if not entry.ready_for_roi:
+            messagebox.showwarning(
+                "ROI Editor",
+                "This recording is missing the motion-corrected movie or max projection.",
+            )
             return
 
         entry.roi_path.parent.mkdir(parents=True, exist_ok=True)
