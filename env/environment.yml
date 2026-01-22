@@ -1,0 +1,21 @@
+name: napari-env
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.10
+  - napari=0.4.*
+  - pyqt=5.15.*
+  - qt-main
+  - numpy
+  - scipy
+  - scikit-image
+  - tifffile
+  - imageio
+  - dask
+  - vispy
+  - pyopengl
+  - pandas
+  - matplotlib
+  - pip
