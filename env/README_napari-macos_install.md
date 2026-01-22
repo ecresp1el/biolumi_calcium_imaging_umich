@@ -23,3 +23,8 @@ From the directory containing `napari-macos.yml`:
 
 ```bash
 conda env create -f napari-macos.yml
+
+
+## if you need to create a fresh env: 
+conda remove -n napari-env --all
+conda env create -f napari-macos.yml
