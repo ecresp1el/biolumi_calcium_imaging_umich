@@ -3,8 +3,6 @@ name: napari-env
 channels:
   - conda-forge
 
-channel_priority: strict
-
 dependencies:
   # --- Python (stable for napari/Qt) ---
   - python=3.10
