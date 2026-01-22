@@ -43,7 +43,8 @@ To verify that everything works correctly, run:
 
 Use the Napari helper script to open a motion-corrected TIFF movie and a max
 projection image, then draw/save manual ROI labels (3D labels matching the
-movie time axis).
+movie time axis). When you close Napari, the CLI prints ROI count, shape, dtype,
+and the output path.
 
 Example usage:
 
@@ -54,41 +55,6 @@ python -m BL_CalciumAnalysis.napari_roi_cli \
   --roi /path/to/roi_masks_uint16.tif \
   --save-roi /path/to/roi_masks_uint16.tif \
   --strict
-```
-
-🧪 Preprocess an Imaris movie (motion correction + projections)
-
-Use the preprocessing CLI to convert an Imaris `.ims` recording (or every `.ims`
-file in a directory) to a TIFF stack, run CaImAn motion correction, and save
-max/avg/std projections plus a manifest JSON in a recording-specific folder.
-
-Example usage:
-
-```
-python -m BL_CalciumAnalysis.preprocess_cli \
-  --ims "/Volumes/Manny4TBUM/12_3_2025/test_gcamp_dreadd_dtom_Confocal - Green_2025-12-03_2.ims" \
-  --output-root "/path/to/project_root"
-```
-
-Process all `.ims` files in a directory:
-
-```
-python -m BL_CalciumAnalysis.preprocess_cli \
-  --ims "/Volumes/Manny4TBUM/12_5_2025/2025-12-05" \
-  --output-root "/path/to/project_root"
-```
-
-🖥️ ROI Curation Tracker (GUI)
-
-Use the GUI to track which recordings still need ROI work and launch Napari
-directly for a selected recording. The GUI reads `processing_manifest.json`
-files created by preprocessing.
-
-Example usage:
-
-```
-python -m BL_CalciumAnalysis.roi_gui \
-  --project-root "/path/to/project_root"
 ```
 
 🚀 Future Enhancements
