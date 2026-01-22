@@ -56,6 +56,28 @@ python -m BL_CalciumAnalysis.napari_roi_cli \
   --strict
 ```
 
+🧪 Preprocess an Imaris movie (motion correction + projections)
+
+Use the preprocessing CLI to convert an Imaris `.ims` recording (or every `.ims`
+file in a directory) to a TIFF stack, run CaImAn motion correction, and save
+max/avg/std projections plus a manifest JSON in a recording-specific folder.
+
+Example usage:
+
+```
+python -m BL_CalciumAnalysis.preprocess_cli \
+  --ims "/Volumes/Manny4TBUM/12_3_2025/test_gcamp_dreadd_dtom_Confocal - Green_2025-12-03_2.ims" \
+  --output-root "/path/to/project_root"
+```
+
+Process all `.ims` files in a directory:
+
+```
+python -m BL_CalciumAnalysis.preprocess_cli \
+  --ims "/Volumes/Manny4TBUM/12_5_2025/2025-12-05" \
+  --output-root "/path/to/project_root"
+```
+
 🚀 Future Enhancements
 
 Automate metadata collection.
