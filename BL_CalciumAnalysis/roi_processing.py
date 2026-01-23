@@ -102,7 +102,12 @@ def _save_side_by_side_movie(
         bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_w)
         return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-    with imageio.get_writer(str(out_path), fps=fps, codec="libx264") as writer:
+    with imageio.get_writer(
+        str(out_path),
+        fps=fps,
+        codec="libx264",
+        format="ffmpeg",
+    ) as writer:
         for t in range(t_frames):
             raw_rgb = norm_and_colorize(raw_movie[t], raw_lo, raw_hi)
             mc_rgb = norm_and_colorize(mc_movie[t], mc_lo, mc_hi)
