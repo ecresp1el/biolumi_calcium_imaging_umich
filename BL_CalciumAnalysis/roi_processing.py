@@ -33,6 +33,7 @@ class RoiAnalysisOutputs:
     traces_plot: Path
     dff_plot: Path
     roi_grid_movie: Path | None
+    roi_grid_snapshot: Path | None
     movies_note: Path | None
 
 
@@ -75,8 +76,8 @@ def _save_side_by_side_movie(
         raise ValueError("Raw and motion-corrected movies must have the same shape.")
 
     t_frames, height, width = raw_movie.shape
-    raw_lo, raw_hi = np.percentile(raw_movie, [1, 99])
-    mc_lo, mc_hi = np.percentile(mc_movie, [1, 99])
+    combined = np.concatenate([raw_movie.reshape(-1), mc_movie.reshape(-1)])
+    lo, hi = np.percentile(combined, [1, 99])
 
     cmap = plt.colormaps.get_cmap(cmap_name)
 
@@ -109,8 +110,8 @@ def _save_side_by_side_movie(
         format="ffmpeg",
     ) as writer:
         for t in range(t_frames):
-            raw_rgb = norm_and_colorize(raw_movie[t], raw_lo, raw_hi)
-            mc_rgb = norm_and_colorize(mc_movie[t], mc_lo, mc_hi)
+            raw_rgb = norm_and_colorize(raw_movie[t], lo, hi)
+            mc_rgb = norm_and_colorize(mc_movie[t], lo, hi)
             frame_rgb = np.concatenate([raw_rgb, mc_rgb], axis=1)
 
             img = Image.fromarray(frame_rgb)
@@ -258,12 +259,14 @@ def make_mc_roi_trace_movie_grid_with_outlines(
     cmap: str = "gray",
     n_cols: int = 5,
     inset_pad: int = 5,
-) -> Path:
+) -> tuple[Path, Path]:
     print("[roi_processing] Starting ROI grid movie with outlines.")
     video_path = Path(video_path)
     save_dir = video_path.parent
     out_path = save_dir / f"{video_path.stem}_MC_ROI_TRACE_GRID_OUTLINES.mp4"
+    snapshot_path = save_dir / f"{video_path.stem}_MC_ROI_TRACE_GRID_OUTLINES.png"
     print(f"[roi_processing] Output path: {out_path}")
+    print(f"[roi_processing] Snapshot path: {snapshot_path}")
 
     t_frames, height, width = mc_movie_u16.shape
     print(
@@ -380,11 +383,14 @@ def make_mc_roi_trace_movie_grid_with_outlines(
         fig.canvas.draw()
         frame = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)[..., :3]
         writer.append_data(frame)
+        if t == t_frames - 1:
+            fig.savefig(snapshot_path, dpi=200)
         plt.close(fig)
 
     writer.close()
     print(f"[roi_processing] Saved GRID movie with OUTLINES: {out_path}")
-    return out_path
+    print(f"[roi_processing] Saved GRID snapshot: {snapshot_path}")
+    return out_path, snapshot_path
 
 
 def _base_stem_from_raw(raw_path: Path) -> str:
@@ -500,9 +506,10 @@ def process_roi_analysis(
     print(f"[roi_processing] Saved trace plots: {traces_plot}, {dff_plot}")
 
     roi_grid_movie: Path | None = None
+    roi_grid_snapshot: Path | None = None
     if generate_movies:
         print("[roi_processing] Generating ROI grid movie with outlines.")
-        roi_grid_movie = make_mc_roi_trace_movie_grid_with_outlines(
+        roi_grid_movie, roi_grid_snapshot = make_mc_roi_trace_movie_grid_with_outlines(
             mc_movie_u16,
             static_labels,
             dff_traces,
@@ -524,6 +531,7 @@ def process_roi_analysis(
         "traces_plot": str(traces_plot),
         "dff_plot": str(dff_plot),
         "roi_grid_movie": str(roi_grid_movie) if roi_grid_movie else None,
+        "roi_grid_snapshot": str(roi_grid_snapshot) if roi_grid_snapshot else None,
         "movies_note": str(movie_note_path) if movie_note_path else None,
     }
     manifest_path.write_text(json.dumps(payload, indent=2))
@@ -542,5 +550,6 @@ def process_roi_analysis(
         traces_plot=traces_plot,
         dff_plot=dff_plot,
         roi_grid_movie=roi_grid_movie,
+        roi_grid_snapshot=roi_grid_snapshot,
         movies_note=movie_note_path,
     )
