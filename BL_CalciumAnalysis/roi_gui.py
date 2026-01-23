@@ -69,11 +69,21 @@ def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
 
 def load_recordings(project_root: Path) -> list[RecordingEntry]:
     manifests = sorted(project_root.rglob("processing_manifest.json"))
+    print(f"[roi_gui] Scanning {project_root} for manifests.")
+    print(f"[roi_gui] Found {len(manifests)} manifest(s).")
     recordings: list[RecordingEntry] = []
     for manifest in manifests:
         entry = _load_manifest(manifest)
-        if entry is not None:
-            recordings.append(entry)
+        if entry is None:
+            print(f"[roi_gui] Skipping invalid manifest: {manifest}")
+            continue
+        recordings.append(entry)
+        print(
+            "[roi_gui] Loaded recording: "
+            f"name={entry.name} "
+            f"ready={entry.ready_for_roi} "
+            f"roi_exists={entry.roi_exists}"
+        )
     return recordings
 
 
@@ -162,6 +172,14 @@ class RoiTrackerApp(ttk.Frame):
         self.pending_entries = [entry for entry in entries if entry.ready_for_roi and not entry.roi_exists]
         self.completed_entries = [entry for entry in entries if entry.roi_exists]
         self.missing_entries = [entry for entry in entries if not entry.ready_for_roi]
+
+        print(
+            "[roi_gui] Refresh summary: "
+            f"total={len(entries)} "
+            f"pending={len(self.pending_entries)} "
+            f"completed={len(self.completed_entries)} "
+            f"missing_inputs={len(self.missing_entries)}"
+        )
 
         self.pending_listbox.delete(0, tk.END)
         self.completed_listbox.delete(0, tk.END)
@@ -290,6 +308,7 @@ def main() -> None:
     if not args.project_root.exists():
         raise FileNotFoundError(f"Project root not found: {args.project_root}")
 
+    print(f"[roi_gui] Launching ROI tracker for: {args.project_root}")
     root = tk.Tk()
     app = RoiTrackerApp(root, args.project_root)
     root.mainloop()
