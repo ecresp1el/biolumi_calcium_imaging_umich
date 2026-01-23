@@ -6,6 +6,7 @@ import argparse
 import json
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -318,6 +319,7 @@ class RoiTrackerApp(ttk.Frame):
 
     def process_roi_traces(self) -> None:
         entries = self._get_selected_completed_entries()
+        print("[roi_gui] Process ROI Traces clicked.")
         if not entries:
             if not self.completed_entries:
                 messagebox.showinfo("Process ROI Traces", "No recordings with completed ROIs found.")
@@ -330,14 +332,22 @@ class RoiTrackerApp(ttk.Frame):
                 return
             entries = self.completed_entries
 
+        print(f"[roi_gui] Processing {len(entries)} recording(s).")
         failures: list[str] = []
         for entry in entries:
+            print(f"[roi_gui] Processing entry: {entry.name}")
+            print(f"[roi_gui] Manifest: {entry.manifest_path}")
+            print(f"[roi_gui] ROI path: {entry.roi_path}")
             if not entry.roi_exists:
                 failures.append(f"{entry.name}: ROI file missing.")
                 continue
             try:
+                print("[roi_gui] Starting ROI analysis (generate_movies=False).")
                 process_roi_analysis(entry.manifest_path, entry.roi_path)
+                print(f"[roi_gui] Finished ROI analysis: {entry.name}")
             except Exception as exc:
+                print(f"[roi_gui] ROI analysis failed: {entry.name}")
+                print(traceback.format_exc())
                 failures.append(f"{entry.name}: {exc}")
 
         if failures:
