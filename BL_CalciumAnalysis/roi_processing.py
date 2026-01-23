@@ -183,6 +183,12 @@ def _load_roi_labels(roi_path: Path, movie_shape: tuple[int, int, int]) -> np.nd
 
 
 def extract_static_traces(mc_movie: np.ndarray, static_labels: np.ndarray) -> dict[int, np.ndarray]:
+    """Compute raw fluorescence traces for each ROI.
+
+    The ROIs are defined by a 2D static label image (Y, X). For each ROI ID, we
+    average the motion-corrected movie intensity within that ROI on every frame,
+    yielding a raw fluorescence trace (mean intensity per frame).
+    """
     roi_ids = np.unique(static_labels)
     roi_ids = roi_ids[roi_ids != 0]
     traces: dict[int, np.ndarray] = {}
@@ -194,11 +200,13 @@ def extract_static_traces(mc_movie: np.ndarray, static_labels: np.ndarray) -> di
 
 
 def compute_dff(trace: np.ndarray, baseline_percentile: int = 10) -> np.ndarray:
+    """Compute ΔF/F from a raw trace using a percentile baseline."""
     f0 = np.percentile(trace, baseline_percentile)
     return (trace - f0) / (f0 + 1e-9)
 
 
 def _plot_traces(traces: dict[int, np.ndarray], mc_movie_u16: np.ndarray, out_path: Path) -> Path:
+    """Plot raw ROI traces (mean intensity per frame), vertically offset for readability."""
     plt.figure(figsize=(6, 6))
     offset = 0
     spacing = float(np.max(mc_movie_u16)) * 0.05
@@ -216,6 +224,7 @@ def _plot_traces(traces: dict[int, np.ndarray], mc_movie_u16: np.ndarray, out_pa
 
 
 def _plot_dff_traces(dff_traces: dict[int, np.ndarray], out_path: Path) -> Path:
+    """Plot ΔF/F traces for each ROI."""
     plt.figure(figsize=(12, 6))
     for rid in sorted(dff_traces.keys()):
         plt.plot(dff_traces[rid], label=f"ROI {rid}")
@@ -351,6 +360,23 @@ def process_roi_analysis(
     roi_path: Path,
     generate_movies: bool = False,
 ) -> RoiAnalysisOutputs:
+    """Run ROI analysis: extract raw traces, compute ΔF/F, and write plots/CSVs.
+
+    Analysis summary (conceptually):
+      1) Load raw + motion-corrected TIFF stacks (T, Y, X) from the manifest.
+      2) Normalize the motion-corrected movie to uint16 for consistent plotting.
+      3) Load the ROI labels (T, Y, X), verify shape, and collapse to a 2D
+         static label map by taking the max over time.
+      4) For each ROI ID, compute the mean intensity inside the ROI on every
+         frame (raw traces).
+      5) Convert raw traces to ΔF/F using a baseline percentile (default 10th).
+      6) Save CSVs and plots for raw traces and ΔF/F traces.
+      7) Optionally write diagnostic movies and projection images.
+
+    The raw trace plot is a visualization of mean intensity per frame (offset
+    vertically per ROI). The ΔF/F plot is the normalized signal relative to the
+    baseline percentile, highlighting activity changes over time.
+    """
     payload = json.loads(manifest_path.read_text())
     paths = payload.get("paths", {})
 
