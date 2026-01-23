@@ -91,9 +91,10 @@ def load_recordings(project_root: Path) -> list[RecordingEntry]:
 
 
 class RoiTrackerApp(ttk.Frame):
-    def __init__(self, master: tk.Tk, project_root: Path) -> None:
+    def __init__(self, master: tk.Tk, project_root: Path, generate_movies: bool = False) -> None:
         super().__init__(master)
         self.project_root = project_root
+        self.generate_movies = generate_movies
         self.pending_entries: list[RecordingEntry] = []
         self.completed_entries: list[RecordingEntry] = []
         self.missing_entries: list[RecordingEntry] = []
@@ -342,8 +343,12 @@ class RoiTrackerApp(ttk.Frame):
                 failures.append(f"{entry.name}: ROI file missing.")
                 continue
             try:
-                print("[roi_gui] Starting ROI analysis (generate_movies=False).")
-                process_roi_analysis(entry.manifest_path, entry.roi_path)
+                print(f"[roi_gui] Starting ROI analysis (generate_movies={self.generate_movies}).")
+                process_roi_analysis(
+                    entry.manifest_path,
+                    entry.roi_path,
+                    generate_movies=self.generate_movies,
+                )
                 print(f"[roi_gui] Finished ROI analysis: {entry.name}")
             except Exception as exc:
                 print(f"[roi_gui] ROI analysis failed: {entry.name}")
@@ -367,6 +372,11 @@ def main() -> None:
         type=Path,
         help="Root directory containing recording folders with processing_manifest.json files.",
     )
+    parser.add_argument(
+        "--generate-movies",
+        action="store_true",
+        help="Generate diagnostic movies (raw-vs-mc and ROI grid with outlines).",
+    )
     args = parser.parse_args()
 
     if not args.project_root.exists():
@@ -374,7 +384,7 @@ def main() -> None:
 
     print(f"[roi_gui] Launching ROI tracker for: {args.project_root}")
     root = tk.Tk()
-    app = RoiTrackerApp(root, args.project_root)
+    app = RoiTrackerApp(root, args.project_root, generate_movies=args.generate_movies)
     root.mainloop()
 
 
