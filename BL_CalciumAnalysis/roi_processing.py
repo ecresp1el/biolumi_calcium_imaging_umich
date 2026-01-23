@@ -136,7 +136,13 @@ def _save_side_by_side_movie(
                     stroke_fill=(0, 0, 0),
                 )
 
-            writer.append_data(np.array(img))
+            frame = np.array(img.convert("RGB"), dtype=np.uint8)
+            if frame.ndim != 3 or frame.shape[2] != 3:
+                raise ValueError(
+                    "Movie frame must be HxWx3 after RGB conversion, "
+                    f"got shape {frame.shape}."
+                )
+            writer.append_data(np.ascontiguousarray(frame))
 
     print(f"[roi_processing] Wrote movie: {out_path}")
     return out_path
