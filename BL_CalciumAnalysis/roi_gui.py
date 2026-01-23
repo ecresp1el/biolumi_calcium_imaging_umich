@@ -11,6 +11,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from BL_CalciumAnalysis.roi_processing import process_roi_analysis
+
 
 @dataclass(frozen=True)
 class RecordingEntry:
@@ -127,7 +129,12 @@ class RoiTrackerApp(ttk.Frame):
         missing_frame.columnconfigure(0, weight=1)
 
         self.pending_listbox = tk.Listbox(pending_frame, height=12, exportselection=False)
-        self.completed_listbox = tk.Listbox(completed_frame, height=12, exportselection=False)
+        self.completed_listbox = tk.Listbox(
+            completed_frame,
+            height=12,
+            exportselection=False,
+            selectmode=tk.EXTENDED,
+        )
         self.missing_listbox = tk.Listbox(missing_frame, height=12, exportselection=False)
 
         pending_scroll = ttk.Scrollbar(pending_frame, orient="vertical", command=self.pending_listbox.yview)
@@ -171,6 +178,9 @@ class RoiTrackerApp(ttk.Frame):
         )
         ttk.Button(button_frame, text="Open Recording Folder", command=self.open_recording_folder).grid(
             row=0, column=2
+        )
+        ttk.Button(button_frame, text="Process ROI Traces", command=self.process_roi_traces).grid(
+            row=0, column=3, padx=8
         )
 
     def refresh(self) -> None:
@@ -299,6 +309,44 @@ class RoiTrackerApp(ttk.Frame):
             subprocess.Popen(["open", str(folder)])
         except FileNotFoundError:
             messagebox.showerror("Open Folder", "Could not open folder on this platform.")
+
+    def _get_selected_completed_entries(self) -> list[RecordingEntry]:
+        selections = self.completed_listbox.curselection()
+        if not selections:
+            return []
+        return [self.completed_entries[idx] for idx in selections]
+
+    def process_roi_traces(self) -> None:
+        entries = self._get_selected_completed_entries()
+        if not entries:
+            if not self.completed_entries:
+                messagebox.showinfo("Process ROI Traces", "No recordings with completed ROIs found.")
+                return
+            proceed = messagebox.askyesno(
+                "Process ROI Traces",
+                "No completed recordings selected. Process all completed recordings?",
+            )
+            if not proceed:
+                return
+            entries = self.completed_entries
+
+        failures: list[str] = []
+        for entry in entries:
+            if not entry.roi_exists:
+                failures.append(f"{entry.name}: ROI file missing.")
+                continue
+            try:
+                process_roi_analysis(entry.manifest_path, entry.roi_path)
+            except Exception as exc:
+                failures.append(f"{entry.name}: {exc}")
+
+        if failures:
+            messagebox.showerror(
+                "Process ROI Traces",
+                "Some recordings failed to process:\n" + "\n".join(failures),
+            )
+        else:
+            messagebox.showinfo("Process ROI Traces", "ROI trace extraction complete.")
 
 
 def main() -> None:
