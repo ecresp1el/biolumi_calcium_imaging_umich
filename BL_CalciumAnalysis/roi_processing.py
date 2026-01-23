@@ -37,9 +37,10 @@ class RoiAnalysisOutputs:
 
 def _to_uint16(movie: np.ndarray) -> np.ndarray:
     movie = np.asarray(movie)
+    movie = np.nan_to_num(movie, nan=0.0, posinf=0.0, neginf=0.0)
     movie = np.clip(movie, 0, None)
-    maxv = movie.max()
-    if maxv == 0:
+    maxv = float(movie.max())
+    if maxv <= 0:
         return movie.astype(np.uint16)
     return (movie / maxv * 65535).astype(np.uint16)
 
@@ -53,6 +54,8 @@ def _ensure_movie_3d(movie: np.ndarray, label: str) -> np.ndarray:
             raise ValueError(
                 f"{label} movie has unsupported channel dimension {movie.shape[-1]}."
             )
+    elif movie.ndim == 3 and movie.shape[-1] in {1, 3} and movie.shape[-1] <= 4:
+        movie = movie.mean(axis=-1)
     if movie.ndim != 3:
         raise ValueError(f"{label} movie must be 3D (T, Y, X), got shape {movie.shape}.")
     return movie
