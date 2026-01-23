@@ -39,16 +39,15 @@ This will create a structure like:
 
 ```
 project_root/
-  group_1/
-    recording_1/
+   recording_1/
       processing_manifest.json
       raw/
       motion_corrected/
       projections/
       roi/
       roi_analysis/
-  group_2/
-    ...
+   recording_2/
+      ...
 ```
 
 > **Note:** `processing_manifest.json` is the single source of truth for where each output lives. It is updated after ROI analysis with a `roi_analysis` section that records the outputs described below.
