@@ -22,17 +22,18 @@ import matplotlib.pyplot as plt
 @dataclass(frozen=True)
 class RoiAnalysisOutputs:
     analysis_dir: Path
-    raw_vs_mc_movie: Path
-    mc_movie_uint16: Path
-    max_projection: Path
-    avg_projection: Path
-    std_projection: Path
+    raw_vs_mc_movie: Path | None
+    mc_movie_uint16: Path | None
+    max_projection: Path | None
+    avg_projection: Path | None
+    std_projection: Path | None
     static_labels_tiff: Path
     traces_csv: Path
     dff_csv: Path
     traces_plot: Path
     dff_plot: Path
-    roi_grid_movie: Path
+    roi_grid_movie: Path | None
+    movies_note: Path | None
 
 
 def _to_uint16(movie: np.ndarray) -> np.ndarray:
@@ -168,17 +169,16 @@ def _save_projections_uint16(mc_movie_u16: np.ndarray, video_path: Path) -> tupl
 
 def _load_roi_labels(roi_path: Path, movie_shape: tuple[int, int, int]) -> np.ndarray:
     roi_data = tiff.imread(roi_path)
-    if roi_data.ndim == 2:
-        roi_data = np.broadcast_to(roi_data, movie_shape)
-    elif roi_data.ndim == 3:
-        if roi_data.shape[1:] != movie_shape[1:]:
-            raise ValueError(
-                f"ROI spatial shape {roi_data.shape[1:]} != movie {movie_shape[1:]}"
-            )
-        if roi_data.shape[0] != movie_shape[0]:
-            roi_data = np.broadcast_to(roi_data[0], movie_shape)
-    else:
-        raise ValueError(f"ROI mask must be 2D or 3D, got {roi_data.shape}")
+    if roi_data.ndim != 3:
+        raise ValueError("ROI mask must be 3D (T, Y, X). Your mask is 2D.")
+
+    t_roi, y_roi, x_roi = roi_data.shape
+    t_mc, y_mc, x_mc = movie_shape
+    if (y_roi != y_mc) or (x_roi != x_mc):
+        raise ValueError("ERROR: ROI (Y,X) does NOT match movie size!")
+    if t_roi != t_mc:
+        print("⚠️ WARNING: ROI T != Movie T — Will broadcast ROI mask across time.")
+        roi_data = np.broadcast_to(roi_data[0], movie_shape)
     return roi_data
 
 
@@ -346,7 +346,11 @@ def _base_stem_from_raw(raw_path: Path) -> str:
     return stem
 
 
-def process_roi_analysis(manifest_path: Path, roi_path: Path) -> RoiAnalysisOutputs:
+def process_roi_analysis(
+    manifest_path: Path,
+    roi_path: Path,
+    generate_movies: bool = False,
+) -> RoiAnalysisOutputs:
     payload = json.loads(manifest_path.read_text())
     paths = payload.get("paths", {})
 
@@ -372,9 +376,21 @@ def process_roi_analysis(manifest_path: Path, roi_path: Path) -> RoiAnalysisOutp
     base_stem = _base_stem_from_raw(raw_tiff)
     video_path = analysis_dir / f"{base_stem}_raw_vs_mc_withtext.mp4"
 
-    _save_side_by_side_movie(raw_movie, mc_movie, video_path)
-    mc_movie_uint16_path = _save_motion_corrected_movie_uint16(mc_movie_u16, video_path)
-    max_path, avg_path, std_path = _save_projections_uint16(mc_movie_u16, video_path)
+    movie_note_path: Path | None = None
+    if generate_movies:
+        _save_side_by_side_movie(raw_movie, mc_movie, video_path)
+        mc_movie_uint16_path = _save_motion_corrected_movie_uint16(mc_movie_u16, video_path)
+        max_path, avg_path, std_path = _save_projections_uint16(mc_movie_u16, video_path)
+    else:
+        mc_movie_uint16_path = None
+        max_path = None
+        avg_path = None
+        std_path = None
+        movie_note_path = analysis_dir / "movies_skipped.txt"
+        movie_note_path.write_text(
+            "Movie generation skipped (raw-vs-mc MP4, projections, ROI grid movie). "
+            "Enable generate_movies=True to run these steps."
+        )
 
     roi_data = _load_roi_labels(roi_path, mc_movie_u16.shape)
     static_labels = roi_data.max(axis=0)
@@ -397,35 +413,38 @@ def process_roi_analysis(manifest_path: Path, roi_path: Path) -> RoiAnalysisOutp
     _plot_traces(traces, mc_movie_u16, traces_plot)
     _plot_dff_traces(dff_traces, dff_plot)
 
-    roi_grid_movie = make_mc_roi_trace_movie_grid_with_outlines(
-        mc_movie_u16,
-        static_labels,
-        dff_traces,
-        video_path,
-        fps=10,
-        n_cols=5,
-    )
+    roi_grid_movie: Path | None = None
+    if generate_movies:
+        roi_grid_movie = make_mc_roi_trace_movie_grid_with_outlines(
+            mc_movie_u16,
+            static_labels,
+            dff_traces,
+            video_path,
+            fps=10,
+            n_cols=5,
+        )
 
     payload["roi_analysis"] = {
         "analysis_dir": str(analysis_dir),
-        "raw_vs_mc_movie": str(video_path),
-        "mc_movie_uint16": str(mc_movie_uint16_path),
-        "max_projection_uint16": str(max_path),
-        "avg_projection_uint16": str(avg_path),
-        "std_projection_uint16": str(std_path),
+        "raw_vs_mc_movie": str(video_path) if generate_movies else None,
+        "mc_movie_uint16": str(mc_movie_uint16_path) if mc_movie_uint16_path else None,
+        "max_projection_uint16": str(max_path) if max_path else None,
+        "avg_projection_uint16": str(avg_path) if avg_path else None,
+        "std_projection_uint16": str(std_path) if std_path else None,
         "static_roi_labels": str(static_labels_path),
         "traces_csv": str(traces_csv),
         "dff_csv": str(dff_csv),
         "traces_plot": str(traces_plot),
         "dff_plot": str(dff_plot),
-        "roi_grid_movie": str(roi_grid_movie),
+        "roi_grid_movie": str(roi_grid_movie) if roi_grid_movie else None,
+        "movies_note": str(movie_note_path) if movie_note_path else None,
     }
     manifest_path.write_text(json.dumps(payload, indent=2))
     print(f"[roi_processing] Updated manifest: {manifest_path}")
 
     return RoiAnalysisOutputs(
         analysis_dir=analysis_dir,
-        raw_vs_mc_movie=video_path,
+        raw_vs_mc_movie=video_path if generate_movies else None,
         mc_movie_uint16=mc_movie_uint16_path,
         max_projection=max_path,
         avg_projection=avg_path,
@@ -436,4 +455,5 @@ def process_roi_analysis(manifest_path: Path, roi_path: Path) -> RoiAnalysisOutp
         traces_plot=traces_plot,
         dff_plot=dff_plot,
         roi_grid_movie=roi_grid_movie,
+        movies_note=movie_note_path,
     )
