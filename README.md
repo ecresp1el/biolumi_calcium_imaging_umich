@@ -43,7 +43,8 @@ To verify that everything works correctly, run:
 
 Use the Napari helper script to open a motion-corrected TIFF movie and a max
 projection image, then draw/save manual ROI labels (3D labels matching the
-movie time axis).
+movie time axis). When you close Napari, the CLI prints ROI count, shape, dtype,
+and the output path.
 
 Example usage:
 
