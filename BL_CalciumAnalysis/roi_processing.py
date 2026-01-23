@@ -78,6 +78,17 @@ def _save_side_by_side_movie(
     t_frames, height, width = raw_movie.shape
     combined = np.concatenate([raw_movie.reshape(-1), mc_movie.reshape(-1)])
     lo, hi = np.percentile(combined, [1, 99])
+    print(
+        "[roi_processing] Raw-vs-MC scaling "
+        f"(shared): lo={lo:.3f}, hi={hi:.3f}, "
+        f"raw_min={raw_movie.min():.3f}, raw_max={raw_movie.max():.3f}, "
+        f"mc_min={mc_movie.min():.3f}, mc_max={mc_movie.max():.3f}"
+    )
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        print(
+            "[roi_processing] WARNING: Invalid scaling range "
+            f"(lo={lo}, hi={hi}). Movie frames may appear black."
+        )
 
     cmap = plt.colormaps.get_cmap(cmap_name)
 
@@ -110,6 +121,15 @@ def _save_side_by_side_movie(
         format="ffmpeg",
     ) as writer:
         for t in range(t_frames):
+            if t == 0 or t == t_frames - 1 or t % 25 == 0:
+                raw_frame = raw_movie[t]
+                mc_frame = mc_movie[t]
+                print(
+                    "[roi_processing] Frame stats "
+                    f"{t + 1}/{t_frames}: "
+                    f"raw_min={raw_frame.min():.3f}, raw_max={raw_frame.max():.3f}, "
+                    f"mc_min={mc_frame.min():.3f}, mc_max={mc_frame.max():.3f}"
+                )
             raw_rgb = norm_and_colorize(raw_movie[t], lo, hi)
             mc_rgb = norm_and_colorize(mc_movie[t], lo, hi)
             frame_rgb = np.concatenate([raw_rgb, mc_rgb], axis=1)
