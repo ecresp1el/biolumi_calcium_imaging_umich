@@ -6,6 +6,7 @@ import argparse
 import json
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -90,9 +91,10 @@ def load_recordings(project_root: Path) -> list[RecordingEntry]:
 
 
 class RoiTrackerApp(ttk.Frame):
-    def __init__(self, master: tk.Tk, project_root: Path) -> None:
+    def __init__(self, master: tk.Tk, project_root: Path, generate_movies: bool = False) -> None:
         super().__init__(master)
         self.project_root = project_root
+        self.generate_movies = generate_movies
         self.pending_entries: list[RecordingEntry] = []
         self.completed_entries: list[RecordingEntry] = []
         self.missing_entries: list[RecordingEntry] = []
@@ -318,6 +320,7 @@ class RoiTrackerApp(ttk.Frame):
 
     def process_roi_traces(self) -> None:
         entries = self._get_selected_completed_entries()
+        print("[roi_gui] Process ROI Traces clicked.")
         if not entries:
             if not self.completed_entries:
                 messagebox.showinfo("Process ROI Traces", "No recordings with completed ROIs found.")
@@ -330,14 +333,26 @@ class RoiTrackerApp(ttk.Frame):
                 return
             entries = self.completed_entries
 
+        print(f"[roi_gui] Processing {len(entries)} recording(s).")
         failures: list[str] = []
         for entry in entries:
+            print(f"[roi_gui] Processing entry: {entry.name}")
+            print(f"[roi_gui] Manifest: {entry.manifest_path}")
+            print(f"[roi_gui] ROI path: {entry.roi_path}")
             if not entry.roi_exists:
                 failures.append(f"{entry.name}: ROI file missing.")
                 continue
             try:
-                process_roi_analysis(entry.manifest_path, entry.roi_path)
+                print(f"[roi_gui] Starting ROI analysis (generate_movies={self.generate_movies}).")
+                process_roi_analysis(
+                    entry.manifest_path,
+                    entry.roi_path,
+                    generate_movies=self.generate_movies,
+                )
+                print(f"[roi_gui] Finished ROI analysis: {entry.name}")
             except Exception as exc:
+                print(f"[roi_gui] ROI analysis failed: {entry.name}")
+                print(traceback.format_exc())
                 failures.append(f"{entry.name}: {exc}")
 
         if failures:
@@ -357,6 +372,11 @@ def main() -> None:
         type=Path,
         help="Root directory containing recording folders with processing_manifest.json files.",
     )
+    parser.add_argument(
+        "--generate-movies",
+        action="store_true",
+        help="Generate diagnostic movies (raw-vs-mc and ROI grid with outlines).",
+    )
     args = parser.parse_args()
 
     if not args.project_root.exists():
@@ -364,7 +384,7 @@ def main() -> None:
 
     print(f"[roi_gui] Launching ROI tracker for: {args.project_root}")
     root = tk.Tk()
-    app = RoiTrackerApp(root, args.project_root)
+    app = RoiTrackerApp(root, args.project_root, generate_movies=args.generate_movies)
     root.mainloop()
 
 
