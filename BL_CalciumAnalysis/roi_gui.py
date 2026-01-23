@@ -43,8 +43,11 @@ def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
     except json.JSONDecodeError:
         return None
 
-    ims_path = Path(payload.get("ims_path", manifest_path.parent.name))
-    recording_name = ims_path.stem if ims_path.suffix else manifest_path.parent.name
+    ims_path_raw = payload.get("ims_path")
+    ims_path = Path(ims_path_raw) if ims_path_raw else manifest_path.parent
+    recording_name = ims_path.stem if ims_path.suffix else ims_path.name
+    if not recording_name:
+        recording_name = manifest_path.parent.name
     paths = payload.get("paths", {})
 
     motion_corrected_raw = paths.get("motion_corrected_tiff")
