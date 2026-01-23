@@ -13,6 +13,7 @@ dependencies:
   - scikit-image
   - tifffile
   - imageio
+  - imageio-ffmpeg
   - h5py
   - caiman
   - dask

@@ -102,7 +102,12 @@ def _save_side_by_side_movie(
         bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_w)
         return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
-    with imageio.get_writer(str(out_path), fps=fps, codec="libx264") as writer:
+    with imageio.get_writer(
+        str(out_path),
+        fps=fps,
+        codec="libx264",
+        format="ffmpeg",
+    ) as writer:
         for t in range(t_frames):
             raw_rgb = norm_and_colorize(raw_movie[t], raw_lo, raw_hi)
             mc_rgb = norm_and_colorize(mc_movie[t], mc_lo, mc_hi)
@@ -136,7 +141,13 @@ def _save_side_by_side_movie(
                     stroke_fill=(0, 0, 0),
                 )
 
-            writer.append_data(np.array(img))
+            frame = np.array(img.convert("RGB"), dtype=np.uint8)
+            if frame.ndim != 3 or frame.shape[2] != 3:
+                raise ValueError(
+                    "Movie frame must be HxWx3 after RGB conversion, "
+                    f"got shape {frame.shape}."
+                )
+            writer.append_data(np.ascontiguousarray(frame))
 
     print(f"[roi_processing] Wrote movie: {out_path}")
     return out_path
@@ -248,27 +259,49 @@ def make_mc_roi_trace_movie_grid_with_outlines(
     n_cols: int = 5,
     inset_pad: int = 5,
 ) -> Path:
+    print("[roi_processing] Starting ROI grid movie with outlines.")
     video_path = Path(video_path)
     save_dir = video_path.parent
     out_path = save_dir / f"{video_path.stem}_MC_ROI_TRACE_GRID_OUTLINES.mp4"
+    print(f"[roi_processing] Output path: {out_path}")
 
     t_frames, height, width = mc_movie_u16.shape
+    print(
+        "[roi_processing] Movie shape (T, Y, X): "
+        f"{t_frames}, {height}, {width}"
+    )
+    print(
+        "[roi_processing] Static labels shape: "
+        f"{static_labels.shape}, dtype={static_labels.dtype}"
+    )
+    print(
+        "[roi_processing] DFF trace keys: "
+        f"{sorted(dff_traces.keys())[:10]}{'...' if len(dff_traces) > 10 else ''}"
+    )
     lo, hi = np.percentile(mc_movie_u16, [1, 99])
+    print(f"[roi_processing] Intensity percentiles: lo={lo}, hi={hi}")
 
     def norm(frame: np.ndarray) -> np.ndarray:
         return np.clip((frame - lo) / (hi - lo + 1e-9), 0, 1)
 
     roi_ids = sorted([rid for rid in np.unique(static_labels) if rid != 0])
+    print(f"[roi_processing] ROI count (nonzero labels): {len(roi_ids)}")
     roi_cmap = plt.colormaps.get_cmap("tab20")
 
     roi_rgb = np.zeros((height, width, 3), dtype=np.float32)
     for i, rid in enumerate(roi_ids):
         roi_rgb[static_labels == rid] = roi_cmap(i)[:3]
+    print("[roi_processing] ROI overlay RGB map prepared.")
 
     global_ymax = max(dff_traces[r].max() for r in roi_ids) * 1.1
     global_ymin = min(dff_traces[r].min() for r in roi_ids) * 1.1
+    print(
+        "[roi_processing] Global ΔF/F limits: "
+        f"ymin={global_ymin:.4f}, ymax={global_ymax:.4f}"
+    )
 
     n_rows = int(np.ceil(len(roi_ids) / n_cols))
+    print(f"[roi_processing] ROI grid layout: {n_rows} rows x {n_cols} cols")
 
     roi_bounds: dict[int, tuple[int, int, int, int] | None] = {}
     for rid in roi_ids:
@@ -281,9 +314,15 @@ def make_mc_roi_trace_movie_grid_with_outlines(
             roi_bounds[rid] = (y0, y1, x0, x1)
         else:
             roi_bounds[rid] = None
+    preview_bounds = list(roi_bounds.items())[:5]
+    if preview_bounds:
+        preview_text = ", ".join(f"{rid}:{bounds}" for rid, bounds in preview_bounds)
+        print(f"[roi_processing] ROI bounds preview: {preview_text}")
 
     writer = imageio.get_writer(str(out_path), fps=fps, codec="libx264")
     for t in range(t_frames):
+        if t == 0 or t == t_frames - 1 or t % 25 == 0:
+            print(f"[roi_processing] Rendering frame {t + 1}/{t_frames}")
         fig = plt.figure(figsize=(16, 10))
         gs_top = fig.add_gridspec(1, 3, top=0.92, bottom=0.65, hspace=0.25)
 
@@ -377,11 +416,17 @@ def process_roi_analysis(
     vertically per ROI). The ΔF/F plot is the normalized signal relative to the
     baseline percentile, highlighting activity changes over time.
     """
+    print("[roi_processing] Starting ROI analysis.")
+    print(f"[roi_processing] Manifest path: {manifest_path}")
+    print(f"[roi_processing] ROI path: {roi_path}")
+    print(f"[roi_processing] generate_movies={generate_movies}")
     payload = json.loads(manifest_path.read_text())
     paths = payload.get("paths", {})
 
     raw_tiff = Path(paths.get("raw_tiff", ""))
     mc_tiff = Path(paths.get("motion_corrected_tiff", ""))
+    print(f"[roi_processing] Raw TIFF path: {raw_tiff}")
+    print(f"[roi_processing] Motion-corrected TIFF path: {mc_tiff}")
 
     if not raw_tiff.exists():
         raise FileNotFoundError(f"Raw TIFF not found: {raw_tiff}")
@@ -392,18 +437,27 @@ def process_roi_analysis(
 
     analysis_dir = manifest_path.parent / "roi_analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[roi_processing] Analysis directory: {analysis_dir}")
 
     raw_movie = tiff.imread(raw_tiff)
     mc_movie = tiff.imread(mc_tiff)
     raw_movie = _ensure_movie_3d(raw_movie, "Raw")
     mc_movie = _ensure_movie_3d(mc_movie, "Motion-corrected")
+    print(
+        "[roi_processing] Movie shapes (raw, mc): "
+        f"{raw_movie.shape}, {mc_movie.shape}"
+    )
     mc_movie_u16 = _to_uint16(mc_movie)
+    print(f"[roi_processing] Converted motion-corrected movie to uint16.")
 
     base_stem = _base_stem_from_raw(raw_tiff)
     video_path = analysis_dir / f"{base_stem}_raw_vs_mc_withtext.mp4"
+    print(f"[roi_processing] Base stem: {base_stem}")
+    print(f"[roi_processing] Raw-vs-MC movie path: {video_path}")
 
     movie_note_path: Path | None = None
     if generate_movies:
+        print("[roi_processing] Generating movies and projections.")
         _save_side_by_side_movie(raw_movie, mc_movie, video_path)
         mc_movie_uint16_path = _save_motion_corrected_movie_uint16(mc_movie_u16, video_path)
         max_path, avg_path, std_path = _save_projections_uint16(mc_movie_u16, video_path)
@@ -417,14 +471,18 @@ def process_roi_analysis(
             "Movie generation skipped (raw-vs-mc MP4, projections, ROI grid movie). "
             "Enable generate_movies=True to run these steps."
         )
+        print(f"[roi_processing] Movie generation skipped. Note: {movie_note_path}")
 
     roi_data = _load_roi_labels(roi_path, mc_movie_u16.shape)
+    print(f"[roi_processing] ROI mask loaded with shape: {roi_data.shape}")
     static_labels = roi_data.max(axis=0)
     static_labels_path = analysis_dir / f"{base_stem}_static_roi_labels.tif"
     tiff.imwrite(static_labels_path, static_labels.astype(np.uint16))
+    print(f"[roi_processing] Saved static labels: {static_labels_path}")
 
     traces = extract_static_traces(mc_movie_u16, static_labels)
     dff_traces = {rid: compute_dff(trace) for rid, trace in traces.items()}
+    print(f"[roi_processing] Extracted traces for {len(traces)} ROIs.")
 
     traces_df = pd.DataFrame({rid: traces[rid] for rid in sorted(traces.keys())})
     dff_df = pd.DataFrame({rid: dff_traces[rid] for rid in sorted(dff_traces.keys())})
@@ -433,14 +491,17 @@ def process_roi_analysis(
     dff_csv = analysis_dir / f"{base_stem}_roi_dff.csv"
     traces_df.to_csv(traces_csv, index_label="frame")
     dff_df.to_csv(dff_csv, index_label="frame")
+    print(f"[roi_processing] Saved CSVs: {traces_csv}, {dff_csv}")
 
     traces_plot = analysis_dir / f"{base_stem}_roi_traces.png"
     dff_plot = analysis_dir / f"{base_stem}_roi_dff.png"
     _plot_traces(traces, mc_movie_u16, traces_plot)
     _plot_dff_traces(dff_traces, dff_plot)
+    print(f"[roi_processing] Saved trace plots: {traces_plot}, {dff_plot}")
 
     roi_grid_movie: Path | None = None
     if generate_movies:
+        print("[roi_processing] Generating ROI grid movie with outlines.")
         roi_grid_movie = make_mc_roi_trace_movie_grid_with_outlines(
             mc_movie_u16,
             static_labels,
