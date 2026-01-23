@@ -94,10 +94,10 @@ class RoiTrackerApp(ttk.Frame):
         self.pending_entries: list[RecordingEntry] = []
         self.completed_entries: list[RecordingEntry] = []
         self.missing_entries: list[RecordingEntry] = []
-        self.pending_listbox = tk.Listbox(self, height=12, exportselection=False)
-        self.completed_listbox = tk.Listbox(self, height=12, exportselection=False)
-        self.missing_listbox = tk.Listbox(self, height=12, exportselection=False)
-        self.detail_text = tk.Text(self, height=6, width=70, state="disabled")
+        self.pending_listbox: tk.Listbox
+        self.completed_listbox: tk.Listbox
+        self.missing_listbox: tk.Listbox
+        self.detail_text: tk.Text
         self.summary_label = ttk.Label(self, text="")
         self._selected_entry: RecordingEntry | None = None
         self._build_layout()
@@ -126,6 +126,10 @@ class RoiTrackerApp(ttk.Frame):
         completed_frame.columnconfigure(0, weight=1)
         missing_frame.columnconfigure(0, weight=1)
 
+        self.pending_listbox = tk.Listbox(pending_frame, height=12, exportselection=False)
+        self.completed_listbox = tk.Listbox(completed_frame, height=12, exportselection=False)
+        self.missing_listbox = tk.Listbox(missing_frame, height=12, exportselection=False)
+
         pending_scroll = ttk.Scrollbar(pending_frame, orient="vertical", command=self.pending_listbox.yview)
         completed_scroll = ttk.Scrollbar(
             completed_frame, orient="vertical", command=self.completed_listbox.yview
@@ -153,6 +157,8 @@ class RoiTrackerApp(ttk.Frame):
         detail_frame = ttk.LabelFrame(self, text="Recording Details")
         detail_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(12, 0))
         detail_frame.columnconfigure(0, weight=1)
+        detail_frame.rowconfigure(0, weight=1)
+        self.detail_text = tk.Text(detail_frame, height=6, width=70, state="disabled")
         self.detail_text.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
         button_frame = ttk.Frame(self)
