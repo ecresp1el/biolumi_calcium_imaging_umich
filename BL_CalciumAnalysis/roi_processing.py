@@ -44,6 +44,20 @@ def _to_uint16(movie: np.ndarray) -> np.ndarray:
     return (movie / maxv * 65535).astype(np.uint16)
 
 
+def _ensure_movie_3d(movie: np.ndarray, label: str) -> np.ndarray:
+    movie = np.asarray(movie)
+    if movie.ndim == 4:
+        if movie.shape[-1] in {1, 3}:
+            movie = movie.mean(axis=-1)
+        else:
+            raise ValueError(
+                f"{label} movie has unsupported channel dimension {movie.shape[-1]}."
+            )
+    if movie.ndim != 3:
+        raise ValueError(f"{label} movie must be 3D (T, Y, X), got shape {movie.shape}.")
+    return movie
+
+
 def _save_side_by_side_movie(
     raw_movie: np.ndarray,
     mc_movie: np.ndarray,
@@ -348,6 +362,8 @@ def process_roi_analysis(manifest_path: Path, roi_path: Path) -> RoiAnalysisOutp
 
     raw_movie = tiff.imread(raw_tiff)
     mc_movie = tiff.imread(mc_tiff)
+    raw_movie = _ensure_movie_3d(raw_movie, "Raw")
+    mc_movie = _ensure_movie_3d(mc_movie, "Motion-corrected")
     mc_movie_u16 = _to_uint16(mc_movie)
 
     base_stem = _base_stem_from_raw(raw_tiff)
