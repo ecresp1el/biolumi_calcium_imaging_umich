@@ -20,4 +20,5 @@ dependencies:
   - pyopengl
   - pandas
   - matplotlib
+  - pillow
   - pip
