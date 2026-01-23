@@ -13,7 +13,7 @@ This project provides a structured approach for analyzing calcium imaging data. 
 2. **Manual ROI annotation (Napari)**  
    `napari_roi_cli` opens the motion-corrected movie and max projection, then writes a 3D ROI label TIFF (T, Y, X) that matches the movie shape.
 3. **ROI analysis (trace extraction + plots)**  
-   `roi_processing.process_roi_analysis` reads the manifest + ROI labels, writes ROI trace CSVs, ΔF/F CSVs, and trace plots into a `roi_analysis/` directory. Optional movies and projection TIFFs can be generated when requested.
+   `roi_processing.process_roi_analysis` reads the manifest + ROI labels, writes ROI trace CSVs, ΔF/F CSVs, and trace plots into a `roi_analysis/` directory. Optional movies can be generated when requested.
 4. **ROI curation tracker (GUI)**  
    `roi_gui` helps track which recordings are missing ROI labels and can trigger ROI analysis for completed recordings.
 
@@ -27,15 +27,6 @@ Run the following command to create and activate the environment:
 
 Run the setup script to create a standardized directory tree for storing image data:
 
-You'll be prompted to enter:
-
-Project directory name (default: biolumi_project)
-
-Number of groups (default: 2)
-
-Number of recordings per group (default: 2)
-
-This will create a structure like:
 
 ```
 project_root/
