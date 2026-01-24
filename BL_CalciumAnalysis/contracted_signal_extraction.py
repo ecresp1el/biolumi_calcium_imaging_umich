@@ -725,6 +725,72 @@ def process_contract_analysis(
     )
 
 
+def process_project_root(
+    project_root: Path,
+    fps: float,
+    output_dir: Path | None = None,
+    config: ContractConfig | None = None,
+) -> list[ContractAnalysisOutputs]:
+    """Batch process every recording under a project root."""
+    manifests = sorted(project_root.glob("**/processing_manifest.json"))
+    eligible: list[tuple[Path, Path]] = []
+    for manifest in manifests:
+        rec_dir = manifest.parent
+        roi_dir = rec_dir / "rois"
+        roi_files = sorted(roi_dir.glob("*_roi_masks_uint16.tif"))
+        roi_path = roi_files[0] if roi_files else None
+        try:
+            payload = json.loads(manifest.read_text())
+            paths = payload.get("paths", {})
+            mc_tiff = paths.get("motion_corrected_tiff")
+            if not mc_tiff:
+                print(f"[batch] Skipping {rec_dir.name}: missing motion_corrected_tiff in manifest.")
+                continue
+            if not Path(mc_tiff).exists():
+                print(f"[batch] Skipping {rec_dir.name}: motion_corrected_tiff not found.")
+                continue
+            if roi_path is None:
+                print(f"[batch] Skipping {rec_dir.name}: no ROI mask in {roi_dir}.")
+                continue
+            eligible.append((manifest, roi_path))
+        except Exception as e:
+            print(f"[batch] Skipping {rec_dir.name}: error reading manifest ({e}).")
+            continue
+
+    total = len(eligible)
+    print(f"[batch] Project root: {project_root}")
+    print(f"[batch] Eligible recordings: {total}")
+    outputs: list[ContractAnalysisOutputs] = []
+    for idx, (manifest_path, roi_path) in enumerate(eligible, start=1):
+        rec_dir = manifest_path.parent
+        print(f"[batch] Processing {idx}/{total}: {rec_dir.name}")
+        cfg_base = config or ContractConfig()
+        cfg = ContractConfig(
+            z_threshold=cfg_base.z_threshold,
+            spike_baseline_window_seconds=cfg_base.spike_baseline_window_seconds,
+            spike_expand_seconds=cfg_base.spike_expand_seconds,
+            mask_expand_min_frames=cfg_base.mask_expand_min_frames,
+            lowess_window_frames=cfg_base.lowess_window_frames,
+            lowess_it=cfg_base.lowess_it,
+            fps=fps,
+            use_motion_corrected=cfg_base.use_motion_corrected,
+            f0_window_seconds=cfg_base.f0_window_seconds,
+            f0_max_fraction=cfg_base.f0_max_fraction,
+            f0_activity_fraction=cfg_base.f0_activity_fraction,
+            f0_low_percentile=cfg_base.f0_low_percentile,
+            f0_high_percentile=cfg_base.f0_high_percentile,
+        )
+        rec_output_dir = (output_dir / rec_dir.name) if output_dir else None
+        out = process_contract_analysis(
+            manifest_path=manifest_path,
+            roi_path=roi_path,
+            output_dir=rec_output_dir,
+            config=cfg,
+        )
+        outputs.append(out)
+    return outputs
+
+
 def run_roi1_f0_debug(
     manifest_path: Path,
     roi_path: Path,
@@ -833,8 +899,9 @@ def _parse_args() -> Any:
     parser = argparse.ArgumentParser(
         description="Run contracted bleaching correction on a recording."
     )
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--roi", type=Path, required=True)
+    parser.add_argument("--project-root", type=Path, default=None, help="Process all recordings under this root (batch mode).")
+    parser.add_argument("--manifest", type=Path, required=False)
+    parser.add_argument("--roi", type=Path, required=False)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--fps", type=float, default=1.0)
     parser.add_argument("--z-threshold", type=float, default=2.0)
@@ -875,7 +942,14 @@ def main() -> None:
         f0_low_percentile=args.f0_low_pct,
         f0_high_percentile=args.f0_high_pct,
     )
-    if args.roi1_f0_debug_only:
+    if args.project_root:
+        process_project_root(
+            project_root=args.project_root,
+            fps=args.fps,
+            output_dir=args.output_dir,
+            config=config,
+        )
+    elif args.roi1_f0_debug_only:
         run_roi1_f0_debug(
             manifest_path=args.manifest,
             roi_path=args.roi,
@@ -883,6 +957,8 @@ def main() -> None:
             cfg=config,
         )
     else:
+        if not args.manifest or not args.roi:
+            raise SystemExit("Manifest and ROI are required unless --project-root is provided.")
         process_contract_analysis(
             manifest_path=args.manifest,
             roi_path=args.roi,

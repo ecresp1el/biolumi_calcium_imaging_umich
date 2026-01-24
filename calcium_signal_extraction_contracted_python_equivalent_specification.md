@@ -145,7 +145,7 @@ Remove slow baseline fluctuations while preserving calcium transients.
 
 **Key Parameters**
 - Robust LOWESS smoothing
-- Window: 100 frames (~2.4 seconds)
+- Window:(~2.4 seconds)
 - Down‑weights outliers
 
 **Python Equivalent (Conceptual)**
@@ -185,9 +185,6 @@ Intentionally **unchanged**.
 
 **Preserved Behaviors**
 - Z‑score thresholding
-- Two‑frame peak averaging
-- Negative amplitude clipping
-- Overlapping‑event exclusion via decay ratio
 - Exponential tail subtraction when applicable
 
 **Contract Check**
@@ -214,19 +211,6 @@ Intentionally **unchanged**.
 ☐ No ROI‑specific bleaching fits  
 ☐ No bleaching correction after ΔF/F
 
----
-
-## References
-
-1. Cleveland, W. S. (1979). Robust locally weighted regression and smoothing scatterplots. *Journal of the American Statistical Association*, 74(368), 829–836.
-
-2. Cleveland, W. S., & Devlin, S. J. (1988). Locally weighted regression: An approach to regression analysis by local fitting. *Journal of the American Statistical Association*, 83(403), 596–610.
-
-3. Virtanen, P., et al. (2020). SciPy 1.0: Fundamental algorithms for scientific computing in Python. *Nature Methods*, 17, 261–272.
-
-4. Seabold, S., & Perktold, J. (2010). Statsmodels: Econometric and statistical modeling with Python. *Proceedings of the 9th Python in Science Conference*.
-
----
 
 ## Environment & Dependency Verification (Mandatory Preflight)
 
@@ -383,6 +367,12 @@ Any deviation from this protocol invalidates quantitative comparisons and must b
 ## How to Run (Current Implementation)
 
 ```
+# Batch (all recordings under project root)
+python -m BL_CalciumAnalysis.contracted_signal_extraction \
+  --project-root "/path/to/project_root" \
+  --fps 5
+
+# Single recording
 python -m BL_CalciumAnalysis.contracted_signal_extraction \
   --manifest "/path/to/processing_manifest.json" \
   --roi "/path/to/roi_masks_uint16.tif" \
