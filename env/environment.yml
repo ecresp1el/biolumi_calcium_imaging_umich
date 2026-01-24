@@ -22,4 +22,5 @@ dependencies:
   - pandas
   - matplotlib
   - pillow
+  - statsmodels
   - pip
