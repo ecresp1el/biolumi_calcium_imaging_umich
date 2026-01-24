@@ -77,12 +77,16 @@ def _save_side_by_side_movie(
 
     t_frames, height, width = raw_movie.shape
     combined = np.concatenate([raw_movie.reshape(-1), mc_movie.reshape(-1)])
-    lo, hi = np.percentile(combined, [1, 99])
+    lo, hi = np.nanpercentile(combined, [1, 99])
     print(
         "[roi_processing] Raw-vs-MC scaling "
         f"(shared): lo={lo:.3f}, hi={hi:.3f}, "
         f"raw_min={raw_movie.min():.3f}, raw_max={raw_movie.max():.3f}, "
         f"mc_min={mc_movie.min():.3f}, mc_max={mc_movie.max():.3f}"
+    )
+    print(
+        "[roi_processing] Raw-vs-MC NaN counts: "
+        f"raw_nan={np.isnan(raw_movie).sum()}, mc_nan={np.isnan(mc_movie).sum()}"
     )
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         print(
@@ -484,7 +488,9 @@ def process_roi_analysis(
     movie_note_path: Path | None = None
     if generate_movies:
         print("[roi_processing] Generating movies and projections.")
-        _save_side_by_side_movie(raw_movie, mc_movie, video_path)
+        raw_movie_movie = np.nan_to_num(raw_movie, nan=0.0, posinf=0.0, neginf=0.0)
+        mc_movie_movie = np.nan_to_num(mc_movie, nan=0.0, posinf=0.0, neginf=0.0)
+        _save_side_by_side_movie(raw_movie_movie, mc_movie_movie, video_path)
         mc_movie_uint16_path = _save_motion_corrected_movie_uint16(mc_movie_u16, video_path)
         max_path, avg_path, std_path = _save_projections_uint16(mc_movie_u16, video_path)
     else:
