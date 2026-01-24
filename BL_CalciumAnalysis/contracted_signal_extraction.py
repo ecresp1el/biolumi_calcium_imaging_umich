@@ -16,6 +16,7 @@ from scipy.optimize import curve_fit
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class ContractAnalysisOutputs:
     corrected_traces_csv: Path
     slow_baseline_csv: Path
     env_report_json: Path
+    qc_pdf: Path
 
 
 def validate_environment(env_file: Path | None = None) -> dict[str, Any]:
@@ -266,6 +268,88 @@ def _plot_dff_traces(dff_traces: dict[int, np.ndarray], out_path: Path, title: s
     return out_path
 
 
+def save_qc_pdf(
+    out_path: Path,
+    roi_ids: list[int],
+    raw_traces: dict[int, np.ndarray],
+    corrected_traces: dict[int, np.ndarray],
+    slow_baselines: dict[int, np.ndarray],
+    global_trace: np.ndarray,
+    bleaching_baseline: np.ndarray,
+    spike_mask: np.ndarray,
+) -> Path:
+    """Save a multi-page PDF showing the exact intermediate arrays used in processing."""
+    frames = np.arange(global_trace.shape[0])
+    silent_mask = ~spike_mask
+    spike_min = float(np.nanmin(global_trace))
+    spike_max = float(np.nanmax(global_trace))
+
+    with PdfPages(out_path) as pdf:
+        for rid in roi_ids:
+            raw = np.asarray(raw_traces[rid])
+            corr = np.asarray(corrected_traces[rid])
+            baseline = np.asarray(slow_baselines[rid])
+            fig, axes = plt.subplots(4, 1, figsize=(11, 8.5), sharex=True)
+
+            axes[0].plot(frames, raw, color="black", linewidth=1.0)
+            axes[0].set_ylabel("Raw")
+            axes[0].set_title(f"ROI {rid}: Raw fluorescence")
+
+            axes[1].plot(frames, raw, color="black", linewidth=0.9, label="Raw")
+            axes[1].fill_between(
+                frames,
+                raw.min(),
+                raw.max(),
+                where=spike_mask,
+                color="tomato",
+                alpha=0.25,
+                step="pre",
+                label="Spike mask",
+            )
+            axes[1].fill_between(
+                frames,
+                raw.min(),
+                raw.max(),
+                where=silent_mask,
+                color="mediumseagreen",
+                alpha=0.08,
+                step="pre",
+                label="Silent",
+            )
+            axes[1].set_ylabel("Masking")
+            axes[1].legend(loc="upper right", fontsize=8)
+
+            axes[2].plot(frames, global_trace, color="steelblue", linewidth=0.9, label="Global trace")
+            axes[2].plot(frames, bleaching_baseline, color="darkorange", linewidth=1.1, label="Bleach baseline")
+            axes[2].fill_between(
+                frames,
+                spike_min,
+                spike_max,
+                where=spike_mask,
+                color="tomato",
+                alpha=0.15,
+                step="pre",
+                label="Spike frames",
+            )
+            axes[2].set_ylabel("Bleach fit")
+            axes[2].legend(loc="upper right", fontsize=8)
+
+            axes[3].plot(frames, raw, color="gray", linewidth=0.9, label="Raw")
+            axes[3].plot(frames, corr, color="purple", linewidth=1.0, label="Bleach-corrected")
+            axes[3].plot(frames, baseline, color="forestgreen", linewidth=1.0, label="Slow baseline")
+            axes[3].set_ylabel("Correction")
+            axes[3].set_xlabel("Frame")
+            axes[3].legend(loc="upper right", fontsize=8)
+
+            for ax in axes:
+                ax.grid(alpha=0.2, linewidth=0.5)
+
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+    return out_path
+
+
 def process_contract_analysis(
     manifest_path: Path,
     roi_path: Path,
@@ -371,6 +455,18 @@ def process_contract_analysis(
     _plot_traces(traces, traces_plot, "ROI Fluorescence Traces (Raw)")
     _plot_dff_traces(dff_traces, dff_plot, "ROI dF/F Traces (Bleaching Corrected)")
 
+    qc_pdf = analysis_dir / f"{base_stem}_contract_qc.pdf"
+    save_qc_pdf(
+        out_path=qc_pdf,
+        roi_ids=roi_ids,
+        raw_traces=traces,
+        corrected_traces=corrected_traces,
+        slow_baselines=slow_baselines,
+        global_trace=global_trace,
+        bleaching_baseline=bleaching_baseline,
+        spike_mask=spikes,
+    )
+
     return ContractAnalysisOutputs(
         analysis_dir=analysis_dir,
         traces_csv=traces_csv,
@@ -382,6 +478,7 @@ def process_contract_analysis(
         corrected_traces_csv=corrected_traces_csv,
         slow_baseline_csv=slow_baseline_csv,
         env_report_json=env_report_json,
+        qc_pdf=qc_pdf,
     )
 
 
