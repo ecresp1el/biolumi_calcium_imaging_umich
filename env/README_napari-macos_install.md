@@ -25,5 +25,6 @@ conda env create -f environment.yml
 
 
 ## if you need to create a fresh env: 
+conda deactivate
 conda remove -n napari-env --all
 conda env create -f environment.yml
