@@ -377,3 +377,34 @@ Any deviation from this protocol invalidates quantitative comparisons and must b
 - **Peak detection**: Per‑ROI peaks on sliding‑F0 dF/F with threshold mean+2·std (z≈2), positive‑going only.
 - **QC PDF (contract)**: Per‑ROI pages with three panels: (1) raw + adaptive F0; (2) percentile used; (3) sliding‑F0 dF/F with z=2 threshold and detected peaks.
 - **Outputs**: Contract CSVs for raw traces, (placeholder) bleaching baseline, slow baselines, sliding F0, sliding percentiles, sliding dF/F, per‑ROI peaks, per‑ROI peak counts; QC PDF as above.
+
+---
+
+## How to Run (Current Implementation)
+
+```
+python -m BL_CalciumAnalysis.contracted_signal_extraction \
+  --manifest "/path/to/processing_manifest.json" \
+  --roi "/path/to/roi_masks_uint16.tif" \
+  --fps 5
+```
+
+Outputs are written to `roi_analysis_contract/` alongside the manifest:
+- `*_contract_qc.pdf` — 3-panel pages per ROI (raw+F0, percentile, dF/F+peaks)
+- `*_roi_sliding_f0.csv`, `*_roi_sliding_pct.csv`, `*_roi_sliding_dff.csv`
+- `*_roi_peaks.csv`, `*_roi_peak_counts.csv`
+- ROI1 debug: `*_roi1_sliding_f0_debug.{csv,png}`, `*_roi1_peaks.csv`
+- Legacy placeholders: bleaching baseline CSV/JSON (set to ones, “disabled”)
+
+---
+
+## Function I/O (Key Routines)
+
+- `compute_sliding_f0_adaptive(trace, fps, target_window_s=50, max_fraction=0.4, activity_fraction=0.3, low_percentile=5, high_percentile=50)`  
+  Returns `(f0, percentile_used, window_frames)` per frame for one ROI trace using adaptive percentiles in a time-based sliding window.
+
+- `process_contract_analysis(manifest_path, roi_path, output_dir=None, config=None)`  
+  Reads movie + ROIs from the manifest, writes all contract outputs to `roi_analysis_contract/` (sliding F0/dF/F/peaks, QC PDF, legacy placeholders). Bleaching is disabled; spike masks are diagnostic only.
+
+- `save_qc_pdf(out_path, roi_ids, raw_traces, sliding_f0, sliding_pct, sliding_dff, roi_peak_thresholds, roi_peaks_by_roi)`  
+  Generates the 3-panel PDF pages for each ROI using the already-computed arrays—no recomputation or alternative methods are performed.
