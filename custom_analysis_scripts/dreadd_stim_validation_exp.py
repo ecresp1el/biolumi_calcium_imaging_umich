@@ -193,7 +193,7 @@ def boxplot_counts(df: pd.DataFrame, title: str, out_path: Path) -> None:
         widths=0.5,
     )
     for patch, lab in zip(bp["boxes"], labels):
-        patch.set_facecolor(COL_PRE if lab == "Pre" else COL_POST)
+        patch.set_facecolor(COL_PRE if lab == "- C21" else COL_POST)
     x_positions = np.arange(1, len(labels) + 1)
     for xpos, lab in zip(x_positions, labels):
         vals = filter_outliers(df.loc[df["group"] == lab, "peak_count"]).tolist()
@@ -215,6 +215,7 @@ def boxplot_counts(df: pd.DataFrame, title: str, out_path: Path) -> None:
     plt.grid(False)
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
+    plt.savefig(out_path.with_suffix(".svg"))
     plt.close()
     print(f"[dreadd_stim] Wrote plot: {out_path}")
 
@@ -365,6 +366,7 @@ def multi_panel_boxplots(
     fig.subplots_adjust(wspace=0.35, hspace=0.35)
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
+    fig.savefig(out_path.with_suffix(".svg"))
     plt.close(fig)
     print(f"[dreadd_stim] Wrote multi-panel plot: {out_path}")
 
