@@ -37,6 +37,7 @@ class ContractConfig:
     f0_low_percentile: float = 10.0
     f0_high_percentile: float = 10.0
     bleach_fit_seconds: float = 10.0
+    smooth_window_seconds: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,9 @@ class ContractAnalysisOutputs:
     roi1_f0_debug_csv: Path
     roi1_f0_debug_plot: Path
     roi1_peaks_csv: Path
+    smoothed_dff_csv: Path | None
+    smoothed_peaks_csv: Path | None
+    smoothed_peak_counts_csv: Path | None
 
 
 @dataclass(frozen=True)
@@ -427,6 +431,15 @@ def _plot_traces(traces: dict[int, np.ndarray], out_path: Path, title: str) -> P
     return out_path
 
 
+def smooth_trace(trace: np.ndarray, fps: float, window_seconds: float) -> np.ndarray:
+    trace = np.asarray(trace, dtype=float)
+    if trace.size == 0 or fps <= 0 or window_seconds <= 0:
+        return trace
+    window_frames = max(1, int(round(window_seconds * fps)))
+    window = np.ones(window_frames, dtype=float) / float(window_frames)
+    return np.convolve(trace, window, mode="same")
+
+
 def _plot_dff_traces(dff_traces: dict[int, np.ndarray], out_path: Path, title: str) -> Path:
     plt.figure(figsize=(12, 6))
     for rid in sorted(dff_traces.keys()):
@@ -450,16 +463,20 @@ def save_qc_pdf(
     sliding_f0: dict[int, np.ndarray],
     sliding_pct: dict[int, np.ndarray],
     sliding_dff: dict[int, np.ndarray],
+    sliding_dff_smoothed: dict[int, np.ndarray],
     roi_peak_thresholds: dict[int, float],
     roi_peaks_by_roi: dict[int, list[tuple[int, float]]],
+    roi_smooth_peak_thresholds: dict[int, float],
+    roi_smooth_peaks_by_roi: dict[int, list[tuple[int, float]]],
     frame_mean: np.ndarray,
     bleach_fit_curve: np.ndarray,
     fit_window_s: float,
     f0_window_s: float,
     start_idx: int,
     z_threshold: float,
+    smooth_window_s: float,
 ) -> Path:
-    """Save a multi-page PDF with bleaching and sliding-F0 panels."""
+    """Save a multi-page PDF with bleaching, sliding-F0, and smoothed dF/F panels."""
     with PdfPages(out_path) as pdf:
         for rid in roi_ids:
             raw_orig_full = np.asarray(raw_traces_raw[rid])
@@ -468,13 +485,17 @@ def save_qc_pdf(
             f0 = np.asarray(sliding_f0[rid])
             pct = np.asarray(sliding_pct[rid])
             dff = np.asarray(sliding_dff[rid])
+            dff_smooth = np.asarray(sliding_dff_smoothed[rid])
             thresh = roi_peak_thresholds.get(rid, 0.0)
             peaks_idx = [p[0] for p in roi_peaks_by_roi.get(rid, [])]
             peaks_vals = [p[1] for p in roi_peaks_by_roi.get(rid, [])]
+            smooth_thresh = roi_smooth_peak_thresholds.get(rid, 0.0)
+            smooth_peaks_idx = [p[0] for p in roi_smooth_peaks_by_roi.get(rid, [])]
+            smooth_peaks_vals = [p[1] for p in roi_smooth_peaks_by_roi.get(rid, [])]
             frames_full = np.arange(raw_orig_full.shape[0])
             frames = np.arange(raw.shape[0]) + start_idx
 
-            fig, axes = plt.subplots(4, 1, figsize=(11, 10.5), sharex=False)
+            fig, axes = plt.subplots(5, 1, figsize=(11, 13), sharex=False)
 
             axes[0].plot(frames_full, raw_orig_full, color="gray", linewidth=0.9, label="Raw (full)")
             axes[0].plot(frames_full, raw_corr_full, color="black", linewidth=0.9, label="Bleach-subtracted (full)")
@@ -506,6 +527,17 @@ def save_qc_pdf(
             axes[3].set_ylabel("dF/F")
             axes[3].set_xlabel("Frame")
             axes[3].legend(loc="upper right", fontsize=8)
+
+            axes[4].plot(frames, dff_smooth, color="purple", linewidth=0.9, label="dF/F (smoothed)")
+            axes[4].axhline(smooth_thresh, color="darkorange", linestyle="--", linewidth=1.0, label=f"Peak threshold (z={z_threshold:g})")
+            if smooth_peaks_idx:
+                axes[4].scatter(frames[smooth_peaks_idx], smooth_peaks_vals, color="tomato", s=12, zorder=3, label="Peaks (smoothed)")
+            if frames[-1] > 0 and smooth_window_s > 0:
+                span = smooth_window_s * (len(frames) / frames[-1])
+                axes[4].axvspan(frames[0], frames[0] + span, color="purple", alpha=0.05, label=f"Smooth window ({smooth_window_s:.1f}s)")
+            axes[4].set_ylabel("dF/F (smoothed)")
+            axes[4].set_xlabel("Frame")
+            axes[4].legend(loc="upper right", fontsize=8)
 
             for ax in axes:
                 ax.grid(alpha=0.2, linewidth=0.5)
@@ -619,11 +651,17 @@ def process_contract_analysis(
     sliding_f0: dict[int, np.ndarray] = {}
     sliding_pct: dict[int, np.ndarray] = {}
     sliding_dff: dict[int, np.ndarray] = {}
+    sliding_dff_smoothed: dict[int, np.ndarray] = {}
     roi_peak_thresholds: dict[int, float] = {}
     roi_peaks_by_roi: dict[int, list[tuple[int, float]]] = {}
+    roi_smooth_peak_thresholds: dict[int, float] = {}
+    roi_smooth_peaks_by_roi: dict[int, list[tuple[int, float]]] = {}
     peak_rows: list[dict[str, float | int]] = []
     peak_counts_rows: list[dict[str, float | int]] = []
+    peak_rows_smooth: list[dict[str, float | int]] = []
+    peak_counts_rows_smooth: list[dict[str, float | int]] = []
     win_frames_used: int = 0
+    start_offset_sec = start_idx / float(cfg.fps)
     for rid in roi_ids:
         f0, pct_used, win_frames = compute_sliding_f0_adaptive(
             traces[rid],
@@ -637,20 +675,28 @@ def process_contract_analysis(
         dff_sliding = (traces[rid] - f0) / f0
         mean = float(np.nanmean(dff_sliding))
         std = float(np.nanstd(dff_sliding))
-        thresh = mean + 2.0 * std if np.isfinite(std) and std > 0 else mean
+        thresh = mean + cfg.z_threshold * std if np.isfinite(std) and std > 0 else mean
         peaks_idx, props = find_peaks(dff_sliding, height=thresh)
+        dff_smooth = smooth_trace(dff_sliding, fps=cfg.fps, window_seconds=cfg.smooth_window_seconds)
+        mean_s = float(np.nanmean(dff_smooth))
+        std_s = float(np.nanstd(dff_smooth))
+        thresh_s = mean_s + cfg.z_threshold * std_s if np.isfinite(std_s) and std_s > 0 else mean_s
+        peaks_idx_s, props_s = find_peaks(dff_smooth, height=thresh_s)
         sliding_f0[rid] = f0
         sliding_pct[rid] = pct_used
         sliding_dff[rid] = dff_sliding
+        sliding_dff_smoothed[rid] = dff_smooth
         roi_peak_thresholds[rid] = thresh
         roi_peaks_by_roi[rid] = [(int(idx), float(dff_sliding[idx])) for idx in peaks_idx]
+        roi_smooth_peak_thresholds[rid] = thresh_s
+        roi_smooth_peaks_by_roi[rid] = [(int(idx), float(dff_smooth[idx])) for idx in peaks_idx_s]
         for idx in peaks_idx:
             val = dff_sliding[idx]
             peak_rows.append(
                 {
                     "roi": rid,
-                    "frame": int(idx),
-                    "time_seconds": float(idx) / float(cfg.fps),
+                    "frame": int(idx + start_idx),
+                    "time_seconds": (float(idx) / float(cfg.fps)) + start_offset_sec,
                     "dff": float(val),
                     "dff_zscore": (val - mean) / (std + 1e-9),
                     "threshold": thresh,
@@ -668,6 +714,31 @@ def process_contract_analysis(
                 "window_frames": win_frames,
             }
         )
+        for idx in peaks_idx_s:
+            val = dff_smooth[idx]
+            peak_rows_smooth.append(
+                {
+                    "roi": rid,
+                    "frame": int(idx + start_idx),
+                    "time_seconds": (float(idx) / float(cfg.fps)) + start_offset_sec,
+                    "dff_smoothed": float(val),
+                    "dff_smoothed_zscore": (val - mean_s) / (std_s + 1e-9),
+                    "threshold": thresh_s,
+                }
+            )
+        peak_counts_rows_smooth.append(
+            {
+                "roi": rid,
+                "peak_count": int(len(peaks_idx_s)),
+                "duration_seconds": float(len(traces[rid])) / float(cfg.fps),
+                "peak_rate_hz": float(len(peaks_idx_s)) / max(
+                    float(len(traces[rid])) / float(cfg.fps), 1e-9
+                ),
+                "z_threshold_used": thresh_s,
+                "window_frames": win_frames,
+                "smooth_window_seconds": cfg.smooth_window_seconds,
+            }
+        )
 
     analysis_dir = output_dir or (manifest_path.parent / "roi_analysis_contract")
     analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -677,6 +748,7 @@ def process_contract_analysis(
     traces_csv = analysis_dir / f"{base_stem}_roi_traces.csv"
     dff_csv = analysis_dir / f"{base_stem}_roi_dff.csv"
     corrected_traces_csv = analysis_dir / f"{base_stem}_roi_bleachcorr_traces.csv"
+    bessel_traces_csv = analysis_dir / f"{base_stem}_roi_bessel_traces.csv"
     slow_baseline_csv = analysis_dir / f"{base_stem}_roi_slow_baseline.csv"
     bleaching_subtraction_csv = analysis_dir / f"{base_stem}_bleaching_subtraction.csv"
     traces_plot = analysis_dir / f"{base_stem}_roi_traces.png"
@@ -687,6 +759,9 @@ def process_contract_analysis(
     sliding_dff_csv = analysis_dir / f"{base_stem}_roi_sliding_dff.csv"
     roi_peaks_csv = analysis_dir / f"{base_stem}_roi_peaks.csv"
     roi_peak_counts_csv = analysis_dir / f"{base_stem}_roi_peak_counts.csv"
+    roi_peaks_smoothed_csv = analysis_dir / f"{base_stem}_roi_peaks_smoothed.csv"
+    roi_peak_counts_smoothed_csv = analysis_dir / f"{base_stem}_roi_peak_counts_smoothed.csv"
+    smoothed_dff_csv = analysis_dir / f"{base_stem}_roi_dff_smoothed.csv"
     roi1_f0_debug_csv = analysis_dir / f"{base_stem}_roi1_sliding_f0_debug.csv"
     roi1_f0_debug_plot = analysis_dir / f"{base_stem}_roi1_sliding_f0_debug.png"
     roi1_peaks_csv = analysis_dir / f"{base_stem}_roi1_peaks.csv"
@@ -727,6 +802,11 @@ def process_contract_analysis(
     )
     pd.DataFrame(peak_rows).to_csv(roi_peaks_csv, index=False)
     pd.DataFrame(peak_counts_rows).to_csv(roi_peak_counts_csv, index=False)
+    pd.DataFrame({rid: sliding_dff_smoothed[rid] for rid in roi_ids}).to_csv(
+        smoothed_dff_csv, index_label="frame"
+    )
+    pd.DataFrame(peak_rows_smooth).to_csv(roi_peaks_smoothed_csv, index=False)
+    pd.DataFrame(peak_counts_rows_smooth).to_csv(roi_peak_counts_smoothed_csv, index=False)
 
     env_report_json.write_text(json.dumps(env_info, indent=2))
 
@@ -744,14 +824,18 @@ def process_contract_analysis(
         sliding_f0=sliding_f0,
         sliding_pct=sliding_pct,
         sliding_dff=sliding_dff,
+        sliding_dff_smoothed=sliding_dff_smoothed,
         roi_peak_thresholds=roi_peak_thresholds,
         roi_peaks_by_roi=roi_peaks_by_roi,
+        roi_smooth_peak_thresholds=roi_smooth_peak_thresholds,
+        roi_smooth_peaks_by_roi=roi_smooth_peaks_by_roi,
         frame_mean=frame_mean,
         bleach_fit_curve=bleach_fit_applied,
         fit_window_s=cfg.bleach_fit_seconds,
         f0_window_s=cfg.f0_window_seconds,
         start_idx=start_idx,
         z_threshold=cfg.z_threshold,
+        smooth_window_s=cfg.smooth_window_seconds,
     )
 
     spike_debug_csv = analysis_dir / f"{base_stem}_roi_spike_debug.csv"
@@ -845,6 +929,9 @@ def process_contract_analysis(
         roi1_f0_debug_csv=roi1_f0_debug_csv,
         roi1_f0_debug_plot=roi1_f0_debug_plot,
         roi1_peaks_csv=roi1_peaks_csv,
+        smoothed_dff_csv=smoothed_dff_csv,
+        smoothed_peaks_csv=roi_peaks_smoothed_csv,
+        smoothed_peak_counts_csv=roi_peak_counts_smoothed_csv,
     )
 
 
@@ -1074,6 +1161,7 @@ def _parse_args() -> Any:
     parser.add_argument("--lowess-it", type=int, default=3, help="LOWESS robust iterations (diagnostic).")
     parser.add_argument("--use-raw", action="store_true", help="Use raw movie instead of motion-corrected for trace extraction.")
     parser.add_argument("--bleach-fit-sec", type=float, default=10.0, help="Seconds used for mono-exponential bleach fit on frame mean.")
+    parser.add_argument("--smooth-window-sec", type=float, default=1.0, help="Rolling average window (s) applied to dF/F for comparison.")
     return parser.parse_args()
 
 
@@ -1093,6 +1181,7 @@ def main() -> None:
         f0_low_percentile=args.f0_low_pct,
         f0_high_percentile=args.f0_high_pct,
         bleach_fit_seconds=args.bleach_fit_sec,
+        smooth_window_seconds=args.smooth_window_sec,
     )
     if args.project_root:
         process_project_root(
