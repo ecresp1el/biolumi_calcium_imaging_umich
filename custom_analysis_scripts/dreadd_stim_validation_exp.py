@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import imageio.v2 as imageio
 import tifffile as tiff
 from matplotlib import colormaps, colors
-from scipy.signal import peak_widths, PeakPropertyWarning
+from scipy.signal import peak_widths
 import warnings
 
 # Ensure repo root on sys.path so BL_CalciumAnalysis imports work when run directly.
@@ -212,7 +212,7 @@ def compute_fwhm_seconds(trace: np.ndarray, peak_frames: np.ndarray, fps: float)
     if peak_frames.size == 0:
         return []
     with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=PeakPropertyWarning)
+        warnings.simplefilter("ignore")
         widths, _, _, _ = peak_widths(trace, peak_frames, rel_height=0.5)
     widths = widths[np.isfinite(widths) & (widths > 0)]
     if widths.size == 0:
