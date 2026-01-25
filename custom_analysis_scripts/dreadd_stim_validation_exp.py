@@ -41,12 +41,12 @@ COLORBAR_FILENAME = "pre_post_motion_corrected_colorbar.png"
 
 
 def label_group(rec_name: str) -> str:
-    """Map recording folder name to Pre/Post/Unknown."""
+    """Map recording folder name to -C21/+C21/Unknown."""
     name = rec_name.lower()
     if "before" in name or "pre" in name:
-        return "Pre"
+        return "- C21"
     if "after" in name or "post" in name:
-        return "Post"
+        return "+ C21"
     return "Unknown"
 
 
@@ -78,6 +78,23 @@ def filter_outliers(series: pd.Series) -> pd.Series:
     lower = q1 - 1.5 * iqr
     upper = q3 + 1.5 * iqr
     return vals[(vals >= lower) & (vals <= upper)]
+
+
+def drop_outliers(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Drop rows with outliers (1.5*IQR) in any of the specified columns."""
+    if df.empty:
+        return df
+    mask = pd.Series(True, index=df.index)
+    for col in cols:
+        vals = df[col].dropna()
+        if vals.empty:
+            continue
+        q1, q3 = vals.quantile([0.25, 0.75])
+        iqr = q3 - q1
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+        mask &= df[col].between(lower, upper, inclusive="both")
+    return df[mask].copy()
 
 
 def find_manifest_paths(root: Path) -> dict[str, Path]:
@@ -154,9 +171,10 @@ def boxplot_counts(df: pd.DataFrame, title: str, out_path: Path) -> None:
     if df.empty:
         print(f"[dreadd_stim] Skipping plot (empty data): {out_path}")
         return
+    df = drop_outliers(df, ["peak_count"])
     data = []
     labels = []
-    for grp in ["Pre", "Post"]:
+    for grp in ["- C21", "+ C21"]:
         vals = filter_outliers(df.loc[df["group"] == grp, "peak_count"]).tolist()
         if vals:
             data.append(vals)
@@ -182,7 +200,7 @@ def boxplot_counts(df: pd.DataFrame, title: str, out_path: Path) -> None:
         if not vals:
             continue
         jitter = (np.random.rand(len(vals)) - 0.5) * 0.18
-        scatter_col = COL_PRE if lab == "Pre" else COL_POST
+        scatter_col = COL_PRE if lab == "- C21" else COL_POST
         plt.scatter(
             np.full(len(vals), xpos) + jitter,
             vals,
@@ -201,23 +219,40 @@ def boxplot_counts(df: pd.DataFrame, title: str, out_path: Path) -> None:
     print(f"[dreadd_stim] Wrote plot: {out_path}")
 
 
-def compute_fwhm_seconds(trace: np.ndarray, peak_frames: np.ndarray, fps: float) -> list[float]:
-    """Compute FWHM (in seconds) using scipy peak_widths at half height."""
+def compute_peak_shapes(
+    trace: np.ndarray, peak_frames: np.ndarray, fps: float
+) -> tuple[list[float], list[float]]:
+    """Compute FWHM (s) and integrated area (dF/F * s) using peak_widths at half height."""
     if trace.size == 0 or peak_frames.size == 0:
-        return []
+        return [], []
     peak_frames = peak_frames[(peak_frames >= 0) & (peak_frames < trace.size)]
     # Only keep peaks with positive, finite heights to avoid zero-width warnings.
     heights_ok = np.isfinite(trace[peak_frames]) & (trace[peak_frames] > 0)
     peak_frames = peak_frames[heights_ok]
     if peak_frames.size == 0:
-        return []
+        return [], []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        widths, _, _, _ = peak_widths(trace, peak_frames, rel_height=0.5)
+        widths, _, left_ips, right_ips = peak_widths(trace, peak_frames, rel_height=0.5)
     widths = widths[np.isfinite(widths) & (widths > 0)]
+    valid = np.isfinite(left_ips) & np.isfinite(right_ips)
+    widths = widths[valid]
+    left_ips = left_ips[valid]
+    right_ips = right_ips[valid]
     if widths.size == 0:
-        return []
-    return (widths / fps).tolist()
+        return [], []
+
+    fwhm_seconds = (widths / fps).tolist()
+    areas: list[float] = []
+    for li, ri in zip(left_ips, right_ips):
+        xs = np.arange(np.floor(li), np.ceil(ri) + 1)
+        if xs.size == 0:
+            areas.append(np.nan)
+            continue
+        ys = np.interp(xs, np.arange(trace.size), trace)
+        area = float(np.trapz(ys, dx=1.0) / fps)  # dF/F * seconds
+        areas.append(area)
+    return fwhm_seconds, areas
 
 
 def summarize_metrics(
@@ -243,11 +278,12 @@ def summarize_metrics(
         # Amplitude
         amp_vals = peaks_df.loc[peaks_df["roi"] == roi_int, value_col]
         amp_med = float(amp_vals.median()) if not amp_vals.empty else np.nan
-        # FWHM
+        # FWHM and integrated area
         trace = dff_df[str(roi_int)].to_numpy()
         peak_frames = peaks_df.loc[peaks_df["roi"] == roi_int, "frame"].to_numpy(dtype=int)
-        fwhm_vals = compute_fwhm_seconds(trace, peak_frames, fps)
-        fwhm_med = float(np.median(fwhm_vals)) if fwhm_vals else np.nan
+        fwhm_vals, area_vals = compute_peak_shapes(trace, peak_frames, fps)
+        fwhm_med = float(np.nanmedian(fwhm_vals)) if len(fwhm_vals) else np.nan
+        area_med = float(np.nanmedian(area_vals)) if len(area_vals) else np.nan
         rows.append(
             {
                 "group": group,
@@ -256,6 +292,7 @@ def summarize_metrics(
                 "peak_rate_hz": rate,
                 "peak_amplitude": amp_med,
                 "peak_fwhm_sec": fwhm_med,
+                "peak_integrated_area": area_med,
                 "smoothed": smoothed,
             }
         )
@@ -270,12 +307,13 @@ def multi_panel_boxplots(
         ("peak_rate_hz", "Peak rate (Hz)"),
         ("peak_amplitude", "Peak amplitude (dF/F)"),
         ("peak_fwhm_sec", "FWHM (s)"),
+        ("peak_integrated_area", "Integrated amplitude (dF/F·s)"),
     ]
     dfs = [("Unsmoothed", df_unsmoothed), ("Smoothed", df_smoothed)]
     fig, axes = plt.subplots(
         nrows=len(dfs),
         ncols=len(metrics),
-        figsize=(12, 6),
+        figsize=(15, 6),
     )
     if len(dfs) == 1:
         axes = np.expand_dims(axes, axis=0)
@@ -285,7 +323,7 @@ def multi_panel_boxplots(
             ax = axes[row_idx, col_idx]
             data = []
             labels = []
-            for grp, col in (("Pre", COL_PRE), ("Post", COL_POST)):
+            for grp, col in (("- C21", COL_PRE), ("+ C21", COL_POST)):
                 vals = filter_outliers(df.loc[df["group"] == grp, metric])
                 if vals.empty:
                     continue
@@ -370,9 +408,14 @@ def main() -> None:
     df_unsmoothed = pd.DataFrame(rows_counts)
     df_smoothed = pd.DataFrame(rows_counts_smoothed)
     summary_counts = pd.concat([df_unsmoothed, df_smoothed], ignore_index=True)
+    summary_counts = drop_outliers(summary_counts, ["peak_count"])
 
     metrics_unsmoothed_df = pd.DataFrame(metrics_unsmoothed)
     metrics_smoothed_df = pd.DataFrame(metrics_smoothed)
+
+    metric_cols = ["peak_count", "peak_rate_hz", "peak_amplitude", "peak_fwhm_sec", "peak_integrated_area"]
+    metrics_unsmoothed_df = drop_outliers(metrics_unsmoothed_df, metric_cols)
+    metrics_smoothed_df = drop_outliers(metrics_smoothed_df, metric_cols)
     metrics_all = pd.concat([metrics_unsmoothed_df, metrics_smoothed_df], ignore_index=True)
 
     out_dir = PROJECT_ROOT / "roi_analysis_contract_summary"
