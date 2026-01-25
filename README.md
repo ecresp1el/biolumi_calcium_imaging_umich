@@ -177,7 +177,7 @@ alongside the manifest. Each file is listed below with its contents and data typ
   The batch runner scans for `processing_manifest.json` files, verifies `motion_corrected_tiff` exists, and uses the first `*_roi_masks_uint16.tif` in each `rois/` folder. Progress is printed as `Processing N/Total: recording_name`.
 
 ### Outputs (written to `roi_analysis_contract/` per recording)
-- `*_contract_qc.pdf` — per-ROI pages with 3 panels: raw + sliding F0 (10th percentile), percentile used (constant 10), sliding-F0 dF/F with z=2 peaks.
+- `*_contract_qc.pdf` — per-ROI pages with 3 panels: raw + sliding F0 (10th percentile, default 1 s window), percentile used (constant 10), sliding-F0 dF/F with z=2 peaks (static threshold per ROI).
 - Sliding F0/percentiles/dF/F: `*_roi_sliding_f0.csv`, `*_roi_sliding_pct.csv`, `*_roi_sliding_dff.csv`.
 - Peaks: `*_roi_peaks.csv` (all peaks), `*_roi_peak_counts.csv` (per-ROI counts/rates).
 - ROI1 debug: `*_roi1_sliding_f0_debug.csv`, `*_roi1_sliding_f0_debug.png`, `*_roi1_peaks.csv`.

@@ -32,22 +32,22 @@ class ContractConfig:
     lowess_it: int = 3
     fps: float = 1.0
     use_motion_corrected: bool = True
-    f0_window_seconds: float = 50.0
-    f0_max_fraction: float = 0.4
+    f0_window_seconds: float = 1.0
     f0_activity_fraction: float = 0.3
     f0_low_percentile: float = 10.0
     f0_high_percentile: float = 10.0
+    bleach_fit_seconds: float = 10.0
 
 
 @dataclass(frozen=True)
 class ContractAnalysisOutputs:
     analysis_dir: Path
+    raw_traces_csv: Path
     traces_csv: Path
     dff_csv: Path
     traces_plot: Path
     dff_plot: Path
-    bleaching_baseline_csv: Path
-    bleaching_fit_json: Path
+    bleaching_subtraction_csv: Path
     corrected_traces_csv: Path
     slow_baseline_csv: Path
     env_report_json: Path
@@ -175,6 +175,9 @@ def detect_rough_spikes(
             expand_frames=0,
         )
 
+    finite_med = np.nanmedian(trace) if np.isfinite(np.nanmedian(trace)) else 0.0
+    trace = np.nan_to_num(trace, nan=finite_med, posinf=finite_med, neginf=finite_med)
+
     # Rolling robust baseline (median) and scale (MAD) to handle drift/steps.
     win_frames = max(3, int(round(baseline_window_s * fps)))
     if win_frames % 2 == 0:
@@ -212,6 +215,59 @@ def detect_rough_spikes(
 
 def _bi_exponential(t: np.ndarray, a1: float, tau1: float, a2: float, tau2: float, c: float) -> np.ndarray:
     return a1 * np.exp(-t / tau1) + a2 * np.exp(-t / tau2) + c
+
+
+def fit_monoexp_bleach(
+    frame_mean: np.ndarray, fps: float, fit_window_s: float = 20.0
+) -> tuple[np.ndarray, dict[str, float]]:
+    """Fit a mono-exponential to average frame intensity using the first N seconds."""
+    frame_mean = np.asarray(frame_mean, dtype=float)
+    n = frame_mean.shape[0]
+    if n == 0 or fps <= 0:
+        return np.full_like(frame_mean, np.nan), {"status": "disabled"}
+
+    t = np.arange(n, dtype=float) / fps
+    fit_mask = t <= fit_window_s
+    if fit_mask.sum() < 3:
+        fit_mask = np.arange(min(10, n), dtype=int)  # fallback to first 10 frames
+        t_fit = t[: len(fit_mask)]
+        y_fit = frame_mean[: len(fit_mask)]
+    else:
+        t_fit = t[fit_mask]
+        y_fit = frame_mean[fit_mask]
+
+    y_min = float(np.min(y_fit))
+    y_max = float(np.max(y_fit))
+    amp = max(y_max - y_min, np.finfo(float).eps)
+    tau_guess = max(fit_window_s / 2.0, 1e-3)
+    p0 = [amp, tau_guess, y_min]
+    bounds = ([0.0, 1e-6, -np.inf], [np.inf, np.inf, np.inf])
+
+    try:
+        params, _ = curve_fit(
+            lambda tt, a, tau, c: a * np.exp(-tt / tau) + c,
+            t_fit,
+            y_fit,
+            p0=p0,
+            bounds=bounds,
+            maxfev=20000,
+        )
+        a, tau, c = params
+        fit_curve = a * np.exp(-t / tau) + c
+        return fit_curve, {
+            "status": "ok",
+            "a": float(a),
+            "tau": float(tau),
+            "c": float(c),
+            "fit_window_s": fit_window_s,
+        }
+    except Exception:
+        fallback = np.full_like(frame_mean, np.nanmean(frame_mean))
+        return fallback, {
+            "status": "fit_failed_flat_fallback",
+            "fit_window_s": fit_window_s,
+            "fallback": float(np.nanmean(frame_mean)),
+        }
 
 
 def fit_bleaching_baseline(
@@ -305,24 +361,29 @@ def compute_sliding_f0_adaptive(
     trace: np.ndarray,
     fps: float,
     target_window_s: float = 50.0,
-    max_fraction: float = 0.4,
     activity_fraction: float = 0.3,
     low_percentile: float = 10.0,
     high_percentile: float = 10.0,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Compute adaptive sliding F0 using a time-based window and activity-aware percentile."""
     trace = np.asarray(trace, dtype=float)
+    if np.all(~np.isfinite(trace)):
+        trace = np.zeros_like(trace)
+    else:
+        finite_med = np.nanmedian(trace) if np.isfinite(np.nanmedian(trace)) else 0.0
+        trace = np.nan_to_num(trace, nan=finite_med, posinf=finite_med, neginf=finite_med)
     n = trace.shape[0]
     if n == 0 or fps <= 0:
         return np.zeros_like(trace), np.zeros_like(trace), 0
 
+    # Window derived purely from time and fps; bounded by available frames.
     target_frames = int(round(target_window_s * fps))
-    max_frames_cap = int(np.floor(n * max_fraction))
-    if max_frames_cap >= 3:
-        target_frames = min(target_frames, max_frames_cap)
-    win_frames = max(5, target_frames)
-    if win_frames % 2 == 0:
-        win_frames += 1
+    if target_frames < 3:
+        target_frames = 3
+    win_frames = min(target_frames, n)
+    if win_frames % 2 == 0 and win_frames > 1:
+        win_frames -= 1
+    win_frames = max(1, win_frames)
     half = win_frames // 2
 
     f0 = np.zeros(n, dtype=float)
@@ -351,8 +412,8 @@ def compute_sliding_f0_adaptive(
 def _plot_traces(traces: dict[int, np.ndarray], out_path: Path, title: str) -> Path:
     plt.figure(figsize=(6, 6))
     offset = 0.0
-    all_vals = np.concatenate([np.asarray(tr) for tr in traces.values()])
-    spacing = float(np.nanmax(all_vals)) * 0.05 if all_vals.size else 1.0
+    all_vals = np.concatenate([np.asarray(tr) for tr in traces.values()]) if traces else np.array([])
+    spacing = float(np.nanmax(all_vals)) * 0.05 if all_vals.size and np.isfinite(np.nanmax(all_vals)) else 1.0
     for rid in sorted(traces.keys()):
         plt.plot(traces[rid] + offset, label=f"ROI {rid}")
         offset += spacing
@@ -383,16 +444,22 @@ def _plot_dff_traces(dff_traces: dict[int, np.ndarray], out_path: Path, title: s
 def save_qc_pdf(
     out_path: Path,
     roi_ids: list[int],
+    raw_traces_raw: dict[int, np.ndarray],
     raw_traces: dict[int, np.ndarray],
     sliding_f0: dict[int, np.ndarray],
     sliding_pct: dict[int, np.ndarray],
     sliding_dff: dict[int, np.ndarray],
     roi_peak_thresholds: dict[int, float],
     roi_peaks_by_roi: dict[int, list[tuple[int, float]]],
+    frame_mean: np.ndarray,
+    bleach_fit_curve: np.ndarray,
+    fit_window_s: float,
+    f0_window_s: float,
 ) -> Path:
-    """Save a multi-page PDF with sliding-F0 panels only (raw+F0, percentile, dF/F+peaks)."""
+    """Save a multi-page PDF with bleaching and sliding-F0 panels."""
     with PdfPages(out_path) as pdf:
         for rid in roi_ids:
+            raw_orig = np.asarray(raw_traces_raw[rid])
             raw = np.asarray(raw_traces[rid])
             f0 = np.asarray(sliding_f0[rid])
             pct = np.asarray(sliding_pct[rid])
@@ -402,24 +469,34 @@ def save_qc_pdf(
             peaks_vals = [p[1] for p in roi_peaks_by_roi.get(rid, [])]
             frames = np.arange(raw.shape[0])
 
-            fig, axes = plt.subplots(3, 1, figsize=(11, 8.5), sharex=True)
+            fig, axes = plt.subplots(4, 1, figsize=(11, 10.5), sharex=True)
 
-            axes[0].plot(frames, raw, color="black", linewidth=1.0, label="Trace")
-            axes[0].plot(frames, f0, color="darkorange", linewidth=1.0, label="Adaptive F0")
+            axes[0].plot(frames, raw_orig, color="gray", linewidth=0.9, label="Raw")
+            axes[0].plot(frames, raw, color="black", linewidth=0.9, label="Bleach-subtracted")
             axes[0].set_ylabel("Intensity")
-            axes[0].set_title(f"ROI {rid}: Raw and Adaptive F0")
+            axes[0].set_title(f"ROI {rid}: Raw vs. Bleach-subtracted (mono-exp, first {fit_window_s:.1f}s)")
             axes[0].legend(loc="upper right", fontsize=8)
 
-            axes[1].plot(frames, pct, color="steelblue", linewidth=0.9)
-            axes[1].set_ylabel("Percentile used")
+            axes[1].plot(frames, frame_mean, color="steelblue", linewidth=0.9, label="Frame mean (raw)")
+            axes[1].plot(frames, bleach_fit_curve, color="darkorange", linewidth=1.0, label="Mono-exp fit (first {:.1f}s)".format(fit_window_s))
+            axes[1].axvspan(0, fit_window_s * (len(frames) / frames[-1] if frames[-1] > 0 else 1), color="orange", alpha=0.1, label="Fit window")
+            axes[1].set_ylabel("Mean intensity")
+            axes[1].legend(loc="upper right", fontsize=8)
 
-            axes[2].plot(frames, dff, color="purple", linewidth=0.9, label="dF/F (sliding F0)")
-            axes[2].axhline(thresh, color="darkorange", linestyle="--", linewidth=1.0, label="Peak threshold (z=2)")
-            if peaks_idx:
-                axes[2].scatter(peaks_idx, peaks_vals, color="tomato", s=12, zorder=3, label="Peaks")
-            axes[2].set_ylabel("dF/F")
-            axes[2].set_xlabel("Frame")
+            axes[2].plot(frames, f0, color="darkorange", linewidth=1.0, label="F0 (10th)")
+            if frames[-1] > 0 and f0_window_s > 0:
+                span = f0_window_s * (len(frames) / frames[-1])
+                axes[2].axvspan(0, span, color="gray", alpha=0.08, label="F0 window ({:.1f}s)".format(f0_window_s))
+            axes[2].set_ylabel("F0")
             axes[2].legend(loc="upper right", fontsize=8)
+
+            axes[3].plot(frames, dff, color="purple", linewidth=0.9, label="dF/F (sliding F0)")
+            axes[3].axhline(thresh, color="darkorange", linestyle="--", linewidth=1.0, label="Peak threshold (z=2)")
+            if peaks_idx:
+                axes[3].scatter(peaks_idx, peaks_vals, color="tomato", s=12, zorder=3, label="Peaks")
+            axes[3].set_ylabel("dF/F")
+            axes[3].set_xlabel("Frame")
+            axes[3].legend(loc="upper right", fontsize=8)
 
             for ax in axes:
                 ax.grid(alpha=0.2, linewidth=0.5)
@@ -458,10 +535,19 @@ def process_contract_analysis(
         raise FileNotFoundError(f"ROI mask not found: {roi_path}")
 
     movie = _ensure_movie_3d(tiff.imread(movie_path), "Movie").astype(float)
+    movie = np.nan_to_num(movie, nan=0.0, posinf=0.0, neginf=0.0)
+    frame_mean = movie.mean(axis=(1, 2))
+    bleach_fit_curve, bleach_fit_info = fit_monoexp_bleach(
+        frame_mean, fps=cfg.fps, fit_window_s=cfg.bleach_fit_seconds
+    )
+    corrected_movie = movie - bleach_fit_curve[:, None, None]
+    corrected_movie = np.nan_to_num(corrected_movie, nan=0.0, posinf=0.0, neginf=0.0)
+
     roi_data = _load_roi_labels(roi_path, movie.shape)
     static_labels = roi_data.max(axis=0)
 
-    traces, counts = extract_static_traces(movie, static_labels)
+    traces_raw, counts = extract_static_traces(movie, static_labels)
+    traces, _ = extract_static_traces(corrected_movie, static_labels)
     roi_ids = sorted(traces.keys())
     trace_stack = np.stack([traces[rid] for rid in roi_ids], axis=0)
     weights = np.array([counts[rid] for rid in roi_ids], dtype=float)
@@ -469,7 +555,7 @@ def process_contract_analysis(
         raise ValueError("ROI pixel counts sum to zero.")
     global_trace = np.average(trace_stack, axis=0, weights=weights)
 
-    # Spike masks kept for diagnostics; bleaching correction is disabled.
+    # Spike masks kept for diagnostics; bleaching correction for ROI traces handled via mono-exponential subtraction on frame mean.
     roi_spike_masks = {
         rid: detect_rough_spikes(
             traces[rid],
@@ -485,9 +571,9 @@ def process_contract_analysis(
         np.stack([roi_spike_masks[rid].mask for rid in roi_ids], axis=0)
     )
 
-    # Bleaching disabled: use raw traces directly.
-    bleaching_baseline = np.ones_like(global_trace, dtype=float)
-    fit_params: dict[str, Any] = {"bleaching_correction": "disabled"}
+    # Bleaching baseline from mono-exponential subtraction (already applied to traces).
+    bleaching_baseline = bleach_fit_curve
+    fit_params: dict[str, Any] = bleach_fit_info
     corrected_traces = traces
     slow_baselines = {
         rid: lowess_baseline(
@@ -516,7 +602,6 @@ def process_contract_analysis(
             traces[rid],
             fps=cfg.fps,
             target_window_s=cfg.f0_window_seconds,
-            max_fraction=cfg.f0_max_fraction,
             activity_fraction=cfg.f0_activity_fraction,
             low_percentile=cfg.f0_low_percentile,
             high_percentile=cfg.f0_high_percentile,
@@ -561,12 +646,12 @@ def process_contract_analysis(
     analysis_dir.mkdir(parents=True, exist_ok=True)
 
     base_stem = _base_stem_from_raw(raw_tiff or movie_path)
+    raw_traces_csv = analysis_dir / f"{base_stem}_roi_traces_raw.csv"
     traces_csv = analysis_dir / f"{base_stem}_roi_traces.csv"
     dff_csv = analysis_dir / f"{base_stem}_roi_dff.csv"
     corrected_traces_csv = analysis_dir / f"{base_stem}_roi_bleachcorr_traces.csv"
     slow_baseline_csv = analysis_dir / f"{base_stem}_roi_slow_baseline.csv"
-    bleaching_baseline_csv = analysis_dir / f"{base_stem}_bleaching_baseline.csv"
-    bleaching_fit_json = analysis_dir / f"{base_stem}_bleaching_fit.json"
+    bleaching_subtraction_csv = analysis_dir / f"{base_stem}_bleaching_subtraction.csv"
     traces_plot = analysis_dir / f"{base_stem}_roi_traces.png"
     dff_plot = analysis_dir / f"{base_stem}_roi_dff.png"
     env_report_json = analysis_dir / "contract_environment.json"
@@ -579,6 +664,9 @@ def process_contract_analysis(
     roi1_f0_debug_plot = analysis_dir / f"{base_stem}_roi1_sliding_f0_debug.png"
     roi1_peaks_csv = analysis_dir / f"{base_stem}_roi1_peaks.csv"
 
+    pd.DataFrame({rid: traces_raw[rid] for rid in roi_ids}).to_csv(
+        raw_traces_csv, index_label="frame"
+    )
     pd.DataFrame({rid: traces[rid] for rid in roi_ids}).to_csv(
         traces_csv, index_label="frame"
     )
@@ -594,11 +682,10 @@ def process_contract_analysis(
     pd.DataFrame(
         {
             "frame": np.arange(global_trace.shape[0], dtype=int),
-            "global_trace": global_trace,
-            "bleaching_baseline": bleaching_baseline,
-            "spike_mask": spikes_union.astype(int),
+            "frame_mean_raw": frame_mean,
+            "monoexp_fit": bleaching_baseline,
         }
-    ).to_csv(bleaching_baseline_csv, index=False)
+    ).to_csv(bleaching_subtraction_csv, index=False)
 
     pd.DataFrame({rid: sliding_f0[rid] for rid in roi_ids}).to_csv(
         sliding_f0_csv, index_label="frame"
@@ -612,7 +699,6 @@ def process_contract_analysis(
     pd.DataFrame(peak_rows).to_csv(roi_peaks_csv, index=False)
     pd.DataFrame(peak_counts_rows).to_csv(roi_peak_counts_csv, index=False)
 
-    bleaching_fit_json.write_text(json.dumps(fit_params, indent=2))
     env_report_json.write_text(json.dumps(env_info, indent=2))
 
     _plot_traces(traces, traces_plot, "ROI Fluorescence Traces (Raw)")
@@ -623,12 +709,17 @@ def process_contract_analysis(
     save_qc_pdf(
         out_path=qc_pdf,
         roi_ids=roi_ids_for_qc,
+        raw_traces_raw=traces_raw,
         raw_traces=traces,
         sliding_f0=sliding_f0,
         sliding_pct=sliding_pct,
         sliding_dff=sliding_dff,
         roi_peak_thresholds=roi_peak_thresholds,
         roi_peaks_by_roi=roi_peaks_by_roi,
+        frame_mean=frame_mean,
+        bleach_fit_curve=bleaching_baseline,
+        fit_window_s=cfg.bleach_fit_seconds,
+        f0_window_s=cfg.f0_window_seconds,
     )
 
     spike_debug_csv = analysis_dir / f"{base_stem}_roi_spike_debug.csv"
@@ -703,12 +794,12 @@ def process_contract_analysis(
 
     return ContractAnalysisOutputs(
         analysis_dir=analysis_dir,
+        raw_traces_csv=raw_traces_csv,
         traces_csv=traces_csv,
         dff_csv=dff_csv,
         traces_plot=traces_plot,
         dff_plot=dff_plot,
-        bleaching_baseline_csv=bleaching_baseline_csv,
-        bleaching_fit_json=bleaching_fit_json,
+        bleaching_subtraction_csv=bleaching_subtraction_csv,
         corrected_traces_csv=corrected_traces_csv,
         slow_baseline_csv=slow_baseline_csv,
         env_report_json=env_report_json,
@@ -775,10 +866,10 @@ def process_project_root(
             fps=fps,
             use_motion_corrected=cfg_base.use_motion_corrected,
             f0_window_seconds=cfg_base.f0_window_seconds,
-            f0_max_fraction=cfg_base.f0_max_fraction,
             f0_activity_fraction=cfg_base.f0_activity_fraction,
             f0_low_percentile=cfg_base.f0_low_percentile,
             f0_high_percentile=cfg_base.f0_high_percentile,
+            bleach_fit_seconds=cfg_base.bleach_fit_seconds,
         )
         rec_output_dir = (output_dir / rec_dir.name) if output_dir else None
         out = process_contract_analysis(
@@ -823,7 +914,6 @@ def run_roi1_f0_debug(
         trace,
         fps=cfg.fps,
         target_window_s=cfg.f0_window_seconds,
-        max_fraction=cfg.f0_max_fraction,
         activity_fraction=cfg.f0_activity_fraction,
         low_percentile=cfg.f0_low_percentile,
         high_percentile=cfg.f0_high_percentile,
@@ -944,14 +1034,14 @@ def _parse_args() -> Any:
         help="Minimum expansion in frames added to the time-based expansion window.",
     )
     parser.add_argument("--roi1-f0-debug-only", action="store_true", help="Run only ROI1 sliding-F0 debug (no multi-ROI outputs).")
-    parser.add_argument("--f0-window-sec", type=float, default=50.0, help="Sliding F0 window (s), capped at f0-max-frac of recording.")
-    parser.add_argument("--f0-max-frac", type=float, default=0.4, help="Cap sliding window to this fraction of total frames.")
+    parser.add_argument("--f0-window-sec", type=float, default=1.0, help="Sliding F0 window (s).")
     parser.add_argument("--f0-activity-frac", type=float, default=0.3, help="Activity fraction used to scale percentile (not used when low=high).")
     parser.add_argument("--f0-low-pct", type=float, default=10.0, help="Lower percentile for F0 (equal to high locks F0).")
     parser.add_argument("--f0-high-pct", type=float, default=10.0, help="Upper percentile for F0 (equal to low locks F0).")
     parser.add_argument("--lowess-window", type=int, default=100, help="LOWESS window (frames) for slow baseline (diagnostic).")
     parser.add_argument("--lowess-it", type=int, default=3, help="LOWESS robust iterations (diagnostic).")
     parser.add_argument("--use-raw", action="store_true", help="Use raw movie instead of motion-corrected for trace extraction.")
+    parser.add_argument("--bleach-fit-sec", type=float, default=10.0, help="Seconds used for mono-exponential bleach fit on frame mean.")
     return parser.parse_args()
 
 
@@ -967,10 +1057,10 @@ def main() -> None:
         fps=args.fps,
         use_motion_corrected=not args.use_raw,
         f0_window_seconds=args.f0_window_sec,
-        f0_max_fraction=args.f0_max_frac,
         f0_activity_fraction=args.f0_activity_frac,
         f0_low_percentile=args.f0_low_pct,
         f0_high_percentile=args.f0_high_pct,
+        bleach_fit_seconds=args.bleach_fit_sec,
     )
     if args.project_root:
         process_project_root(
