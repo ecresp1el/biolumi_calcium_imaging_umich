@@ -357,22 +357,22 @@ Any deviation from this protocol invalidates quantitative comparisons and must b
 
 - **Bleaching correction**: Disabled (bleaching baseline set to ones; no division applied). Legacy fields remain for compatibility but contain placeholders.
 - **Spike masking (diagnostic only)**: Per‑ROI local z‑scores (rolling median/MAD, 5 s window, z>2), time‑based expansion (±2.5 s), union across ROIs; not used to modulate bleaching.
-- **Sliding F0**: Per‑ROI sliding window (default ~1 s, derived from FPS, can be overridden) with fixed percentile at the 10th (low=high=10) for all frames; yields F0(t) and dF/F = (F−F0)/F0.
-- **Peak detection**: Per‑ROI peaks on sliding‑F0 dF/F with a static threshold mean+2·std over the full trace (z≈2), positive‑going only.
-- **QC PDF (contract)**: Per‑ROI pages with three panels: (1) raw + sliding F0 (10th percentile); (2) percentile used (constant 10); (3) sliding‑F0 dF/F with z=2 threshold and detected peaks.
-- **Outputs**: Contract CSVs for raw traces, (placeholder) bleaching baseline, slow baselines, sliding F0, sliding percentiles, sliding dF/F, per‑ROI peaks, per‑ROI peak counts; QC PDF as above.
+- **Sliding F0**: Per‑ROI sliding window (default 30 s) derived from FPS, fixed percentile at the 10th (low=high=10) for all frames; yields F0(t) and dF/F = (F−F0)/F0.
+- **Peak detection**: Per‑ROI peaks on sliding‑F0 dF/F with threshold mean+z·std (default z=1), positive‑going only. A smoothed dF/F (rolling mean, default 1.0 s) is also thresholded the same way.
+- **QC PDF (contract)**: Per‑ROI pages with five panels: (1) raw vs. bleach-subtracted (fit window shaded); (2) frame mean with mono-exp fit window shaded; (3) sliding F0 (10th percentile) with F0 window shaded; (4) dF/F with mean+z·SD threshold and peaks; (5) smoothed dF/F with the same threshold and peaks.
+- **Outputs**: Contract CSVs for raw traces, bleach subtraction trace, slow baselines, sliding F0, sliding percentiles, sliding dF/F (unsmoothed and smoothed), per-ROI peaks/counts (unsmoothed and smoothed); QC PDF as above.
 
 ---
 
 ## How to Run (Current Implementation)
 
 ```
-# Batch (all recordings under project root)
+# Batch (all recordings under project root; defaults: fps=5, f0_window=30s, bleach_fit=1s, z=1, smooth=1s)
 python -m BL_CalciumAnalysis.contracted_signal_extraction \
   --project-root "/path/to/project_root" \
   --fps 5
 
-# Single recording
+# Single recording (same defaults)
 python -m BL_CalciumAnalysis.contracted_signal_extraction \
   --manifest "/path/to/processing_manifest.json" \
   --roi "/path/to/roi_masks_uint16.tif" \
@@ -380,11 +380,11 @@ python -m BL_CalciumAnalysis.contracted_signal_extraction \
 ```
 
 Outputs are written to `roi_analysis_contract/` alongside the manifest:
-- `*_contract_qc.pdf` — 3-panel pages per ROI (raw+F0, percentile, dF/F+peaks)
-- `*_roi_sliding_f0.csv`, `*_roi_sliding_pct.csv`, `*_roi_sliding_dff.csv`
-- `*_roi_peaks.csv`, `*_roi_peak_counts.csv`
+- `*_contract_qc.pdf` — 5-panel pages per ROI (raw vs bleach-subtracted, frame mean + fit, F0 window, dF/F peaks, smoothed dF/F peaks)
+- Sliding F0/percentiles/dF/F: `*_roi_sliding_f0.csv`, `*_roi_sliding_pct.csv`, `*_roi_sliding_dff.csv`, `*_roi_dff_smoothed.csv`
+- Peaks: `*_roi_peaks.csv`, `*_roi_peak_counts.csv`, smoothed: `*_roi_peaks_smoothed.csv`, `*_roi_peak_counts_smoothed.csv`
+- Bleach subtraction trace: `*_bleaching_subtraction.csv`; raw/full traces: `*_roi_traces_raw.csv`; bleach-subtracted traces: `*_roi_traces.csv`
 - ROI1 debug: `*_roi1_sliding_f0_debug.{csv,png}`, `*_roi1_peaks.csv`
-- Legacy placeholders: bleaching baseline CSV/JSON (set to ones, “disabled”)
 
 ---
 

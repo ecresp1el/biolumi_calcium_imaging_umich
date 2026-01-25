@@ -24,19 +24,19 @@ from matplotlib.backends.backend_pdf import PdfPages
 class ContractConfig:
     """Configuration for the contracted preprocessing pipeline."""
 
-    z_threshold: float = 3.0
+    z_threshold: float = 1.0
     spike_baseline_window_seconds: float = 5.0
     spike_expand_seconds: float = 2.5
     mask_expand_min_frames: int = 0
     lowess_window_frames: int = 100
     lowess_it: int = 3
-    fps: float = 1.0
+    fps: float = 5.0
     use_motion_corrected: bool = True
-    f0_window_seconds: float = 1.0
+    f0_window_seconds: float = 30.0
     f0_activity_fraction: float = 0.3
     f0_low_percentile: float = 10.0
     f0_high_percentile: float = 10.0
-    bleach_fit_seconds: float = 10.0
+    bleach_fit_seconds: float = 1.0
     smooth_window_seconds: float = 1.0
 
 
@@ -887,16 +887,12 @@ def process_contract_analysis(
 
         ax3 = plt.subplot(3, 1, 3, sharex=ax1)
         roi1_dff = sliding_dff[rid0]
-        mean = float(np.nanmean(roi1_dff))
-        std = float(np.nanstd(roi1_dff))
-        thresh = roi_peak_thresholds.get(
-            rid0, mean + 2.0 * std if np.isfinite(std) and std > 0 else mean
-        )
+        thresh = roi_peak_thresholds.get(rid0, np.nanmedian(roi1_dff))
         roi1_peaks_list = roi_peaks_by_roi.get(rid0, [])
         peaks_idx = [p[0] for p in roi1_peaks_list]
         peaks_vals = [p[1] for p in roi1_peaks_list]
         ax3.plot(roi1_dff, color="purple", label="dF/F (ROI1)")
-        ax3.axhline(thresh, color="darkorange", linestyle="--", linewidth=1.0, label="z=2 threshold")
+        ax3.axhline(thresh, color="darkorange", linestyle="--", linewidth=1.0, label=f"z={cfg.z_threshold:g} (mean+SD)")
         if peaks_idx:
             ax3.scatter(peaks_idx, peaks_vals, color="tomato", s=15, zorder=3, label="Peaks")
         ax3.set_ylabel("dF/F")
@@ -1132,8 +1128,8 @@ def _parse_args() -> Any:
         default=None,
         help="Optional output root; per-recording outputs go into <output-dir>/<recording>/roi_analysis_contract.",
     )
-    parser.add_argument("--fps", type=float, default=1.0, help="Acquisition frame rate (Hz).")
-    parser.add_argument("--z-threshold", type=float, default=3.0, help="Local z threshold for spike masks (diagnostic only).")
+    parser.add_argument("--fps", type=float, default=5.0, help="Acquisition frame rate (Hz).")
+    parser.add_argument("--z-threshold", type=float, default=1.0, help="Local z threshold for spike masks (mean+SD for peaks; diagnostic masks use same).")
     parser.add_argument(
         "--spike-baseline-sec",
         type=float,
@@ -1153,14 +1149,14 @@ def _parse_args() -> Any:
         help="Minimum expansion in frames added to the time-based expansion window.",
     )
     parser.add_argument("--roi1-f0-debug-only", action="store_true", help="Run only ROI1 sliding-F0 debug (no multi-ROI outputs).")
-    parser.add_argument("--f0-window-sec", type=float, default=1.0, help="Sliding F0 window (s).")
+    parser.add_argument("--f0-window-sec", type=float, default=30.0, help="Sliding F0 window (s).")
     parser.add_argument("--f0-activity-frac", type=float, default=0.3, help="Activity fraction used to scale percentile (not used when low=high).")
     parser.add_argument("--f0-low-pct", type=float, default=10.0, help="Lower percentile for F0 (equal to high locks F0).")
     parser.add_argument("--f0-high-pct", type=float, default=10.0, help="Upper percentile for F0 (equal to low locks F0).")
     parser.add_argument("--lowess-window", type=int, default=100, help="LOWESS window (frames) for slow baseline (diagnostic).")
     parser.add_argument("--lowess-it", type=int, default=3, help="LOWESS robust iterations (diagnostic).")
     parser.add_argument("--use-raw", action="store_true", help="Use raw movie instead of motion-corrected for trace extraction.")
-    parser.add_argument("--bleach-fit-sec", type=float, default=10.0, help="Seconds used for mono-exponential bleach fit on frame mean.")
+    parser.add_argument("--bleach-fit-sec", type=float, default=1.0, help="Seconds used for mono-exponential bleach fit on frame mean.")
     parser.add_argument("--smooth-window-sec", type=float, default=1.0, help="Rolling average window (s) applied to dF/F for comparison.")
     return parser.parse_args()
 
