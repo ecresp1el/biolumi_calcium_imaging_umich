@@ -234,13 +234,17 @@ def compute_peak_shapes(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         widths, _, left_ips, right_ips = peak_widths(trace, peak_frames, rel_height=0.5)
-    widths = widths[np.isfinite(widths) & (widths > 0)]
-    valid = np.isfinite(left_ips) & np.isfinite(right_ips)
+    valid = (
+        np.isfinite(widths)
+        & (widths > 0)
+        & np.isfinite(left_ips)
+        & np.isfinite(right_ips)
+    )
+    if not np.any(valid):
+        return [], []
     widths = widths[valid]
     left_ips = left_ips[valid]
     right_ips = right_ips[valid]
-    if widths.size == 0:
-        return [], []
 
     fwhm_seconds = (widths / fps).tolist()
     areas: list[float] = []
