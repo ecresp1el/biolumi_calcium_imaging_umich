@@ -24,7 +24,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 class ContractConfig:
     """Configuration for the contracted preprocessing pipeline."""
 
-    z_threshold: float = 2.0
+    z_threshold: float = 3.0
     spike_baseline_window_seconds: float = 5.0
     spike_expand_seconds: float = 2.5
     mask_expand_min_frames: int = 0
@@ -445,6 +445,7 @@ def save_qc_pdf(
     out_path: Path,
     roi_ids: list[int],
     raw_traces_raw: dict[int, np.ndarray],
+    raw_traces_full: dict[int, np.ndarray],
     raw_traces: dict[int, np.ndarray],
     sliding_f0: dict[int, np.ndarray],
     sliding_pct: dict[int, np.ndarray],
@@ -455,11 +456,14 @@ def save_qc_pdf(
     bleach_fit_curve: np.ndarray,
     fit_window_s: float,
     f0_window_s: float,
+    start_idx: int,
+    z_threshold: float,
 ) -> Path:
     """Save a multi-page PDF with bleaching and sliding-F0 panels."""
     with PdfPages(out_path) as pdf:
         for rid in roi_ids:
-            raw_orig = np.asarray(raw_traces_raw[rid])
+            raw_orig_full = np.asarray(raw_traces_raw[rid])
+            raw_corr_full = np.asarray(raw_traces_full[rid])
             raw = np.asarray(raw_traces[rid])
             f0 = np.asarray(sliding_f0[rid])
             pct = np.asarray(sliding_pct[rid])
@@ -467,33 +471,38 @@ def save_qc_pdf(
             thresh = roi_peak_thresholds.get(rid, 0.0)
             peaks_idx = [p[0] for p in roi_peaks_by_roi.get(rid, [])]
             peaks_vals = [p[1] for p in roi_peaks_by_roi.get(rid, [])]
-            frames = np.arange(raw.shape[0])
+            frames_full = np.arange(raw_orig_full.shape[0])
+            frames = np.arange(raw.shape[0]) + start_idx
 
-            fig, axes = plt.subplots(4, 1, figsize=(11, 10.5), sharex=True)
+            fig, axes = plt.subplots(4, 1, figsize=(11, 10.5), sharex=False)
 
-            axes[0].plot(frames, raw_orig, color="gray", linewidth=0.9, label="Raw")
-            axes[0].plot(frames, raw, color="black", linewidth=0.9, label="Bleach-subtracted")
+            axes[0].plot(frames_full, raw_orig_full, color="gray", linewidth=0.9, label="Raw (full)")
+            axes[0].plot(frames_full, raw_corr_full, color="black", linewidth=0.9, label="Bleach-subtracted (full)")
+            if start_idx > 0:
+                axes[0].axvspan(0, start_idx, color="orange", alpha=0.08, label=f"Clipped {start_idx} frames")
             axes[0].set_ylabel("Intensity")
             axes[0].set_title(f"ROI {rid}: Raw vs. Bleach-subtracted (mono-exp, first {fit_window_s:.1f}s)")
             axes[0].legend(loc="upper right", fontsize=8)
 
-            axes[1].plot(frames, frame_mean, color="steelblue", linewidth=0.9, label="Frame mean (raw)")
-            axes[1].plot(frames, bleach_fit_curve, color="darkorange", linewidth=1.0, label="Mono-exp fit (first {:.1f}s)".format(fit_window_s))
-            axes[1].axvspan(0, fit_window_s * (len(frames) / frames[-1] if frames[-1] > 0 else 1), color="orange", alpha=0.1, label="Fit window")
+            axes[1].plot(frames_full, frame_mean, color="steelblue", linewidth=0.9, label="Frame mean (raw)")
+            axes[1].plot(frames_full, bleach_fit_curve, color="darkorange", linewidth=1.0, label="Mono-exp applied (first {:.1f}s)".format(fit_window_s))
+            if frames_full[-1] > 0 and fit_window_s > 0:
+                span = fit_window_s * (len(frames_full) / frames_full[-1])
+                axes[1].axvspan(0, span, color="orange", alpha=0.1, label="Fit window")
             axes[1].set_ylabel("Mean intensity")
             axes[1].legend(loc="upper right", fontsize=8)
 
             axes[2].plot(frames, f0, color="darkorange", linewidth=1.0, label="F0 (10th)")
             if frames[-1] > 0 and f0_window_s > 0:
                 span = f0_window_s * (len(frames) / frames[-1])
-                axes[2].axvspan(0, span, color="gray", alpha=0.08, label="F0 window ({:.1f}s)".format(f0_window_s))
+                axes[2].axvspan(frames[0], frames[0] + span, color="gray", alpha=0.08, label="F0 window ({:.1f}s)".format(f0_window_s))
             axes[2].set_ylabel("F0")
             axes[2].legend(loc="upper right", fontsize=8)
 
             axes[3].plot(frames, dff, color="purple", linewidth=0.9, label="dF/F (sliding F0)")
-            axes[3].axhline(thresh, color="darkorange", linestyle="--", linewidth=1.0, label="Peak threshold (z=2)")
+            axes[3].axhline(thresh, color="darkorange", linestyle="--", linewidth=1.0, label=f"Peak threshold (z={z_threshold:g})")
             if peaks_idx:
-                axes[3].scatter(peaks_idx, peaks_vals, color="tomato", s=12, zorder=3, label="Peaks")
+                axes[3].scatter(frames[peaks_idx], peaks_vals, color="tomato", s=12, zorder=3, label="Peaks")
             axes[3].set_ylabel("dF/F")
             axes[3].set_xlabel("Frame")
             axes[3].legend(loc="upper right", fontsize=8)
@@ -540,14 +549,32 @@ def process_contract_analysis(
     bleach_fit_curve, bleach_fit_info = fit_monoexp_bleach(
         frame_mean, fps=cfg.fps, fit_window_s=cfg.bleach_fit_seconds
     )
-    corrected_movie = movie - bleach_fit_curve[:, None, None]
+    window_frames = max(1, int(round(cfg.bleach_fit_seconds * cfg.fps)))
+    apply_mask = np.arange(movie.shape[0]) < window_frames
+    bleach_fit_applied = np.zeros_like(bleach_fit_curve)
+    bleach_fit_applied[apply_mask] = bleach_fit_curve[apply_mask]
+
+    corrected_movie = movie - bleach_fit_applied[:, None, None]
     corrected_movie = np.nan_to_num(corrected_movie, nan=0.0, posinf=0.0, neginf=0.0)
+
+    start_idx = min(window_frames, movie.shape[0])
+    if start_idx >= movie.shape[0]:
+        raise ValueError("Bleach fit window trims all frames; reduce --bleach-fit-sec or use lower fps.")
+
+    movie_trim = movie[start_idx:]
+    corrected_trim = corrected_movie[start_idx:]
+    frame_mean_trim = frame_mean[start_idx:]
+    bleach_fit_applied_trim = bleach_fit_applied[start_idx:]
 
     roi_data = _load_roi_labels(roi_path, movie.shape)
     static_labels = roi_data.max(axis=0)
 
-    traces_raw, counts = extract_static_traces(movie, static_labels)
-    traces, _ = extract_static_traces(corrected_movie, static_labels)
+    traces_raw_full, counts = extract_static_traces(movie, static_labels)
+    traces_full, _ = extract_static_traces(corrected_movie, static_labels)
+    traces_raw_trim, _ = extract_static_traces(movie_trim, static_labels)
+    traces_trim, _ = extract_static_traces(corrected_trim, static_labels)
+    traces_raw = {rid: trace for rid, trace in traces_raw_trim.items()}
+    traces = {rid: trace for rid, trace in traces_trim.items()}
     roi_ids = sorted(traces.keys())
     trace_stack = np.stack([traces[rid] for rid in roi_ids], axis=0)
     weights = np.array([counts[rid] for rid in roi_ids], dtype=float)
@@ -572,7 +599,7 @@ def process_contract_analysis(
     )
 
     # Bleaching baseline from mono-exponential subtraction (already applied to traces).
-    bleaching_baseline = bleach_fit_curve
+    bleaching_baseline = bleach_fit_applied
     fit_params: dict[str, Any] = bleach_fit_info
     corrected_traces = traces
     slow_baselines = {
@@ -679,11 +706,13 @@ def process_contract_analysis(
     pd.DataFrame({rid: dff_traces[rid] for rid in roi_ids}).to_csv(
         dff_csv, index_label="frame"
     )
+    n_frames_bleach = min(len(frame_mean_trim), len(bleaching_baseline))
     pd.DataFrame(
         {
-            "frame": np.arange(global_trace.shape[0], dtype=int),
-            "frame_mean_raw": frame_mean,
-            "monoexp_fit": bleaching_baseline,
+            "frame": np.arange(n_frames_bleach, dtype=int) + start_idx,
+            "frame_mean_raw": frame_mean_trim[:n_frames_bleach],
+            "monoexp_fit_applied": bleaching_baseline[:n_frames_bleach],
+            "start_frame_clipped": start_idx,
         }
     ).to_csv(bleaching_subtraction_csv, index=False)
 
@@ -709,7 +738,8 @@ def process_contract_analysis(
     save_qc_pdf(
         out_path=qc_pdf,
         roi_ids=roi_ids_for_qc,
-        raw_traces_raw=traces_raw,
+        raw_traces_raw=traces_raw_full,
+        raw_traces_full=traces_full,
         raw_traces=traces,
         sliding_f0=sliding_f0,
         sliding_pct=sliding_pct,
@@ -717,9 +747,11 @@ def process_contract_analysis(
         roi_peak_thresholds=roi_peak_thresholds,
         roi_peaks_by_roi=roi_peaks_by_roi,
         frame_mean=frame_mean,
-        bleach_fit_curve=bleaching_baseline,
+        bleach_fit_curve=bleach_fit_applied,
         fit_window_s=cfg.bleach_fit_seconds,
         f0_window_s=cfg.f0_window_seconds,
+        start_idx=start_idx,
+        z_threshold=cfg.z_threshold,
     )
 
     spike_debug_csv = analysis_dir / f"{base_stem}_roi_spike_debug.csv"
@@ -728,7 +760,7 @@ def process_contract_analysis(
         res0 = roi_spike_masks[rid0]
         pd.DataFrame(
             {
-                "frame": np.arange(traces[rid0].shape[0], dtype=int),
+                "frame": np.arange(traces[rid0].shape[0], dtype=int) + start_idx,
                 "raw": traces[rid0],
                 "rolling_median": res0.median,
                 "rolling_scale": res0.scale,
@@ -745,7 +777,7 @@ def process_contract_analysis(
         rid0 = roi_ids_for_qc[0]
         pd.DataFrame(
             {
-                "frame": np.arange(traces[rid0].shape[0], dtype=int),
+                "frame": np.arange(traces[rid0].shape[0], dtype=int) + start_idx,
                 "trace": traces[rid0],
                 "f0": sliding_f0[rid0],
                 "percentile_used": sliding_pct[rid0],
@@ -1014,7 +1046,7 @@ def _parse_args() -> Any:
         help="Optional output root; per-recording outputs go into <output-dir>/<recording>/roi_analysis_contract.",
     )
     parser.add_argument("--fps", type=float, default=1.0, help="Acquisition frame rate (Hz).")
-    parser.add_argument("--z-threshold", type=float, default=2.0, help="Local z threshold for spike masks (diagnostic only).")
+    parser.add_argument("--z-threshold", type=float, default=3.0, help="Local z threshold for spike masks (diagnostic only).")
     parser.add_argument(
         "--spike-baseline-sec",
         type=float,
