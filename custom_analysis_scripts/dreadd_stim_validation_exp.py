@@ -10,10 +10,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import imageio.v2 as imageio
 import tifffile as tiff
-from matplotlib import colormaps, colors
+from matplotlib import colormaps, colors, rcParams
 from scipy.signal import peak_widths
+from scipy.stats import mannwhitneyu
 import warnings
 
+# Keep SVG text editable (not converted to paths).
+rcParams["svg.fonttype"] = "none"
 # Ensure repo root on sys.path so BL_CalciumAnalysis imports work when run directly.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -424,6 +427,39 @@ def main() -> None:
     metrics_smoothed_df = drop_outliers(metrics_smoothed_df, metric_cols)
     metrics_all = pd.concat([metrics_unsmoothed_df, metrics_smoothed_df], ignore_index=True)
 
+    def run_stats(df: pd.DataFrame, smoothed_flag: bool) -> list[dict]:
+        results: list[dict] = []
+        if df.empty:
+            return results
+        for metric in metric_cols:
+            grp1 = df.loc[df["group"] == "- C21", metric].dropna()
+            grp2 = df.loc[df["group"] == "+ C21", metric].dropna()
+            if grp1.empty or grp2.empty:
+                continue
+            try:
+                stat, pval = mannwhitneyu(grp1, grp2, alternative="two-sided")
+            except Exception as e:  # noqa: BLE001
+                print(f"[dreadd_stim] Stats failed for {metric} (smoothed={smoothed_flag}): {e}")
+                continue
+            results.append(
+                {
+                    "metric": metric,
+                    "smoothed": smoothed_flag,
+                    "group1": "- C21",
+                    "group2": "+ C21",
+                    "n_group1": int(len(grp1)),
+                    "n_group2": int(len(grp2)),
+                    "statistic": float(stat),
+                    "p_value": float(pval),
+                }
+            )
+        return results
+
+    stats_rows = run_stats(metrics_unsmoothed_df, smoothed_flag=False) + run_stats(
+        metrics_smoothed_df, smoothed_flag=True
+    )
+    stats_df = pd.DataFrame(stats_rows)
+
     out_dir = PROJECT_ROOT / "roi_analysis_contract_summary"
     out_dir.mkdir(exist_ok=True)
     summary_csv = out_dir / "dreadd_stim_peak_counts_summary.csv"
@@ -433,6 +469,10 @@ def main() -> None:
     metrics_csv = out_dir / "dreadd_stim_peak_metrics_summary.csv"
     metrics_all.to_csv(metrics_csv, index=False)
     print(f"[dreadd_stim] Wrote metrics: {metrics_csv}")
+
+    stats_csv = out_dir / "dreadd_stim_peak_metrics_stats.csv"
+    stats_df.to_csv(stats_csv, index=False)
+    print(f"[dreadd_stim] Wrote stats: {stats_csv}")
 
     boxplot_counts(
         df_unsmoothed,
