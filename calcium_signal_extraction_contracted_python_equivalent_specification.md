@@ -357,9 +357,9 @@ Any deviation from this protocol invalidates quantitative comparisons and must b
 
 - **Bleaching correction**: Disabled (bleaching baseline set to ones; no division applied). Legacy fields remain for compatibility but contain placeholders.
 - **Spike masking (diagnostic only)**: Per‑ROI local z‑scores (rolling median/MAD, 5 s window, z>2), time‑based expansion (±2.5 s), union across ROIs; not used to modulate bleaching.
-- **Sliding F0**: Per‑ROI adaptive sliding window (~50 s, capped at 40% of recording), percentile 5th→50th based on local activity; yields F0(t) and dF/F = (F−F0)/F0.
+- **Sliding F0**: Per‑ROI adaptive sliding window (~50 s, capped at 40% of recording), fixed percentile at the 10th (low=high=10) for all frames; yields F0(t) and dF/F = (F−F0)/F0.
 - **Peak detection**: Per‑ROI peaks on sliding‑F0 dF/F with threshold mean+2·std (z≈2), positive‑going only.
-- **QC PDF (contract)**: Per‑ROI pages with three panels: (1) raw + adaptive F0; (2) percentile used; (3) sliding‑F0 dF/F with z=2 threshold and detected peaks.
+- **QC PDF (contract)**: Per‑ROI pages with three panels: (1) raw + sliding F0 (10th percentile); (2) percentile used (constant 10); (3) sliding‑F0 dF/F with z=2 threshold and detected peaks.
 - **Outputs**: Contract CSVs for raw traces, (placeholder) bleaching baseline, slow baselines, sliding F0, sliding percentiles, sliding dF/F, per‑ROI peaks, per‑ROI peak counts; QC PDF as above.
 
 ---

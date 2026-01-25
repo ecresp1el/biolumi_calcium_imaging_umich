@@ -35,8 +35,8 @@ class ContractConfig:
     f0_window_seconds: float = 50.0
     f0_max_fraction: float = 0.4
     f0_activity_fraction: float = 0.3
-    f0_low_percentile: float = 5.0
-    f0_high_percentile: float = 50.0
+    f0_low_percentile: float = 10.0
+    f0_high_percentile: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -307,8 +307,8 @@ def compute_sliding_f0_adaptive(
     target_window_s: float = 50.0,
     max_fraction: float = 0.4,
     activity_fraction: float = 0.3,
-    low_percentile: float = 5.0,
-    high_percentile: float = 50.0,
+    low_percentile: float = 10.0,
+    high_percentile: float = 10.0,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Compute adaptive sliding F0 using a time-based window and activity-aware percentile."""
     trace = np.asarray(trace, dtype=float)
@@ -897,31 +897,61 @@ def _parse_args() -> Any:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run contracted bleaching correction on a recording."
+        description="Sliding-F0 contract pipeline (bleaching disabled). Use --project-root for batch."
     )
-    parser.add_argument("--project-root", type=Path, default=None, help="Process all recordings under this root (batch mode).")
-    parser.add_argument("--manifest", type=Path, required=False)
-    parser.add_argument("--roi", type=Path, required=False)
-    parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--fps", type=float, default=1.0)
-    parser.add_argument("--z-threshold", type=float, default=2.0)
-    parser.add_argument("--spike-baseline-sec", type=float, default=5.0)
-    parser.add_argument("--spike-expand-sec", type=float, default=2.5)
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=None,
+        help="Process every recording under this root (looks for processing_manifest.json and ROI mask).",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        required=False,
+        help="Single recording manifest (ignored when --project-root is supplied).",
+    )
+    parser.add_argument(
+        "--roi",
+        type=Path,
+        required=False,
+        help="Single recording ROI mask (ignored when --project-root is supplied).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Optional output root; per-recording outputs go into <output-dir>/<recording>/roi_analysis_contract.",
+    )
+    parser.add_argument("--fps", type=float, default=1.0, help="Acquisition frame rate (Hz).")
+    parser.add_argument("--z-threshold", type=float, default=2.0, help="Local z threshold for spike masks (diagnostic only).")
+    parser.add_argument(
+        "--spike-baseline-sec",
+        type=float,
+        default=5.0,
+        help="Window (s) for rolling median/MAD used in spike masking (diagnostic only).",
+    )
+    parser.add_argument(
+        "--spike-expand-sec",
+        type=float,
+        default=2.5,
+        help="Time (s) to expand detected spikes on each side (diagnostic only).",
+    )
     parser.add_argument(
         "--mask-expand",
         type=int,
         default=0,
         help="Minimum expansion in frames added to the time-based expansion window.",
     )
-    parser.add_argument("--roi1-f0-debug-only", action="store_true", help="Run only ROI1 adaptive F0 debug.")
-    parser.add_argument("--f0-window-sec", type=float, default=50.0)
-    parser.add_argument("--f0-max-frac", type=float, default=0.4)
-    parser.add_argument("--f0-activity-frac", type=float, default=0.3)
-    parser.add_argument("--f0-low-pct", type=float, default=5.0)
-    parser.add_argument("--f0-high-pct", type=float, default=50.0)
-    parser.add_argument("--lowess-window", type=int, default=100)
-    parser.add_argument("--lowess-it", type=int, default=3)
-    parser.add_argument("--use-raw", action="store_true")
+    parser.add_argument("--roi1-f0-debug-only", action="store_true", help="Run only ROI1 sliding-F0 debug (no multi-ROI outputs).")
+    parser.add_argument("--f0-window-sec", type=float, default=50.0, help="Sliding F0 window (s), capped at f0-max-frac of recording.")
+    parser.add_argument("--f0-max-frac", type=float, default=0.4, help="Cap sliding window to this fraction of total frames.")
+    parser.add_argument("--f0-activity-frac", type=float, default=0.3, help="Activity fraction used to scale percentile (not used when low=high).")
+    parser.add_argument("--f0-low-pct", type=float, default=10.0, help="Lower percentile for F0 (equal to high locks F0).")
+    parser.add_argument("--f0-high-pct", type=float, default=10.0, help="Upper percentile for F0 (equal to low locks F0).")
+    parser.add_argument("--lowess-window", type=int, default=100, help="LOWESS window (frames) for slow baseline (diagnostic).")
+    parser.add_argument("--lowess-it", type=int, default=3, help="LOWESS robust iterations (diagnostic).")
+    parser.add_argument("--use-raw", action="store_true", help="Use raw movie instead of motion-corrected for trace extraction.")
     return parser.parse_args()
 
 
