@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 import imageio.v2 as imageio
 import tifffile as tiff
 from matplotlib import colormaps, colors
-from scipy.signal import peak_widths
+from scipy.signal import peak_widths, PeakPropertyWarning
+import warnings
 
 # Ensure repo root on sys.path so BL_CalciumAnalysis imports work when run directly.
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -205,9 +206,17 @@ def compute_fwhm_seconds(trace: np.ndarray, peak_frames: np.ndarray, fps: float)
     if trace.size == 0 or peak_frames.size == 0:
         return []
     peak_frames = peak_frames[(peak_frames >= 0) & (peak_frames < trace.size)]
+    # Only keep peaks with positive, finite heights to avoid zero-width warnings.
+    heights_ok = np.isfinite(trace[peak_frames]) & (trace[peak_frames] > 0)
+    peak_frames = peak_frames[heights_ok]
     if peak_frames.size == 0:
         return []
-    widths, _, _, _ = peak_widths(trace, peak_frames, rel_height=0.5)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=PeakPropertyWarning)
+        widths, _, _, _ = peak_widths(trace, peak_frames, rel_height=0.5)
+    widths = widths[np.isfinite(widths) & (widths > 0)]
+    if widths.size == 0:
+        return []
     return (widths / fps).tolist()
 
 
@@ -266,8 +275,7 @@ def multi_panel_boxplots(
     fig, axes = plt.subplots(
         nrows=len(dfs),
         ncols=len(metrics),
-        figsize=(9, 6),
-        constrained_layout=True,
+        figsize=(12, 6),
     )
     if len(dfs) == 1:
         axes = np.expand_dims(axes, axis=0)
@@ -290,7 +298,7 @@ def multi_panel_boxplots(
                 data,
                 patch_artist=True,
                 showfliers=False,
-                widths=0.5,
+                widths=0.45,
             )
             for patch, (grp, col) in zip(box["boxes"], labels):
                 patch.set_facecolor(col)
@@ -309,8 +317,11 @@ def multi_panel_boxplots(
                 )
             ax.set_xticks(x_positions)
             ax.set_xticklabels([g for g, _ in labels])
-            ax.set_title(f"{label} — {title}")
+            ax.set_title(f"{label} — {title}", fontsize=9)
+            ax.tick_params(axis="both", labelsize=9)
             ax.grid(False)
+    fig.subplots_adjust(wspace=0.35, hspace=0.35)
+    fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
     print(f"[dreadd_stim] Wrote multi-panel plot: {out_path}")
