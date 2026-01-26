@@ -33,6 +33,13 @@ from BL_CalciumAnalysis.contracted_signal_extraction import (
 PROJECT_ROOT = Path("/Volumes/Manny4TBUM/chem_dreadd_stim_projectfolder")
 FPS = 5.0
 GENERATE_MOVIES = True
+# Example run:
+# python custom_analysis_scripts/dreadd_stim_roi_movie.py \
+#   --generate-movies \
+#   --outline-thickness 4 \
+#   --top-k-highlight 8 \
+#   --frame-stride 1 \
+#   --playback-speed 20
 FRAME_STRIDE = 1  # Increase to drop frames; set 1 to keep all frames.
 TOP_K_HIGHLIGHT = 6  # Also render a second movie with the top-K most fluctuating ROIs; set to None to skip.
 OUTLINE_THICKNESS = 1  # ROI outline thickness (pixels)
