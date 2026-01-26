@@ -279,7 +279,7 @@ def compute_peak_shapes(
 
 
 def summarize_metrics(
-    out: "ContractAnalysisOutputs", group: str, smoothed: bool, fps: float
+    out: "ContractAnalysisOutputs", group: str, smoothed: bool, fps: float, recording: str
 ) -> list[dict]:
     """Collect per-ROI metrics (count, rate, amplitude, FWHM, area) for plotting."""
     counts_csv = out.smoothed_peak_counts_csv if smoothed else out.roi_peak_counts_csv
@@ -314,6 +314,7 @@ def summarize_metrics(
                 "peak_fwhm_sec": fwhm_med,
                 "peak_integrated_area": area_med,
                 "smoothed": smoothed,
+                "recording": recording,
             }
         )
     return rows
@@ -388,6 +389,100 @@ def multi_panel_boxplots(
     print(f"[dreadd_stim_across] Wrote multi-panel plot: {out_path}")
 
 
+def multi_panel_boxplots_by_recording(
+    df_unsmoothed: pd.DataFrame, df_smoothed: pd.DataFrame, out_path: Path
+) -> None:
+    """Multi-panel with transparent boxes and per-recording point colors."""
+    metrics = [
+        ("peak_count", "Peak count"),
+        ("peak_rate_hz", "Peak rate (Hz)"),
+        ("peak_amplitude", "Peak amplitude (dF/F)"),
+        ("peak_fwhm_sec", "FWHM (s)"),
+        ("peak_integrated_area", "Integrated amplitude (dF/F·s)"),
+    ]
+    dfs = [("Unsmoothed", df_unsmoothed), ("Smoothed", df_smoothed)]
+    fig, axes = plt.subplots(
+        nrows=len(dfs),
+        ncols=len(metrics),
+        figsize=(15, 6),
+    )
+    if len(dfs) == 1:
+        axes = np.expand_dims(axes, axis=0)
+
+    cmap_gray = colormaps.get_cmap("Greys")
+    cmap_purp = colormaps.get_cmap("Purples")
+
+    for row_idx, (label, df) in enumerate(dfs):
+        for col_idx, (metric, title) in enumerate(metrics):
+            ax = axes[row_idx, col_idx]
+            data = []
+            labels = []
+            series_per_group: list[tuple[str, pd.Series]] = []
+            for grp in ("- C21", "+ C21"):
+                series = df.loc[df["group"] == grp, metric]
+                vals = filter_outliers(series) if metric in FILTER_METRICS else series.dropna()
+                if vals.empty:
+                    continue
+                data.append(vals)
+                labels.append(grp)
+                series_per_group.append((grp, series))
+            if not data:
+                ax.set_visible(False)
+                continue
+
+            box = ax.boxplot(
+                data,
+                patch_artist=True,
+                showfliers=False,
+                widths=0.45,
+            )
+            for patch, grp in zip(box["boxes"], labels):
+                patch.set_facecolor("none")
+                patch.set_edgecolor(COL_MEDIA if grp == "- C21" else COL_C21)
+                patch.set_linewidth(1.2)
+
+            # Scatter by recording with distinct shades.
+            for grp in ("- C21", "+ C21"):
+                sub = df.loc[df["group"] == grp]
+                if sub.empty:
+                    continue
+                recs = sorted(sub["recording"].dropna().unique())
+                if not recs:
+                    continue
+                cmap = cmap_gray if grp == "- C21" else cmap_purp
+                colors_rec = cmap(np.linspace(0.35, 0.85, len(recs)))
+                rec_to_color = dict(zip(recs, colors_rec))
+                xpos = labels.index(grp) + 1 if grp in labels else None
+                if xpos is None:
+                    continue
+                vals = filter_outliers(sub[metric]) if metric in FILTER_METRICS else sub[metric].dropna()
+                if vals.empty:
+                    continue
+                jitter = (np.random.rand(len(vals)) - 0.5) * 0.18
+                for rec_name, val, jit in zip(sub["recording"], vals, jitter):
+                    col = rec_to_color.get(rec_name, (0, 0, 0, 0.6))
+                    ax.scatter(
+                        xpos + jit,
+                        val,
+                        color=col,
+                        alpha=0.85,
+                        s=16,
+                        zorder=3,
+                    )
+            ax.set_xticks(np.arange(1, len(labels) + 1))
+            ax.set_xticklabels(labels)
+            ax.set_title(f"{label} — {title}", fontsize=9)
+            ax.tick_params(axis="both", labelsize=9)
+            ax.grid(False)
+
+    fig.subplots_adjust(wspace=0.35, hspace=0.35)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    fig.savefig(out_path.with_suffix(".svg"))
+    plt.close(fig)
+    print(f"[dreadd_stim_across] Wrote recording-colored multi-panel plot: {out_path}")
+
+
 def run_stats(df: pd.DataFrame, metric_cols: list[str], smoothed_flag: bool) -> list[dict]:
     results: list[dict] = []
     if df.empty:
@@ -439,10 +534,10 @@ def main() -> None:
         group = label_group(rec_dir.name)
         if out.roi_peak_counts_csv:
             rows_counts.extend(load_peak_counts(Path(out.roi_peak_counts_csv), group, smoothed=False))
-            metrics_unsmoothed.extend(summarize_metrics(out, group, smoothed=False, fps=FPS))
+            metrics_unsmoothed.extend(summarize_metrics(out, group, smoothed=False, fps=FPS, recording=rec_dir.name))
         if out.smoothed_peak_counts_csv:
             rows_counts_smoothed.extend(load_peak_counts(Path(out.smoothed_peak_counts_csv), group, smoothed=True))
-            metrics_smoothed.extend(summarize_metrics(out, group, smoothed=True, fps=FPS))
+            metrics_smoothed.extend(summarize_metrics(out, group, smoothed=True, fps=FPS, recording=rec_dir.name))
 
     # Optional: generate movie using one example from each group if available.
     manifests = find_manifest_paths(PROJECT_ROOT)
@@ -514,6 +609,11 @@ def main() -> None:
         metrics_unsmoothed_df,
         metrics_smoothed_df,
         out_dir / "dreadd_stim_peak_metrics_panels.png",
+    )
+    multi_panel_boxplots_by_recording(
+        metrics_unsmoothed_df,
+        metrics_smoothed_df,
+        out_dir / "dreadd_stim_peak_metrics_panels_by_recording.png",
     )
 
 
