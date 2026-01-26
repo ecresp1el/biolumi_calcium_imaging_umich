@@ -21,6 +21,7 @@ class RecordingEntry:
     manifest_path: Path
     motion_corrected_tiff: Path | None
     max_projection_tiff: Path | None
+    red_projection_tiff: Path | None
     roi_path: Path
 
     @property
@@ -34,6 +35,10 @@ class RecordingEntry:
     @property
     def max_projection_exists(self) -> bool:
         return self.max_projection_tiff is not None and self.max_projection_tiff.exists()
+
+    @property
+    def red_projection_exists(self) -> bool:
+        return self.red_projection_tiff is not None and self.red_projection_tiff.exists()
 
     @property
     def ready_for_roi(self) -> bool:
@@ -58,6 +63,8 @@ def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
 
     motion_corrected = Path(motion_corrected_raw) if motion_corrected_raw else None
     max_projection = Path(max_projection_raw) if max_projection_raw else None
+    red_projection_raw = paths.get("red_projection")
+    red_projection = Path(red_projection_raw) if red_projection_raw else None
 
     roi_path = manifest_path.parent / "rois" / f"{recording_name}_roi_masks_uint16.tif"
 
@@ -66,6 +73,7 @@ def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
         manifest_path=manifest_path,
         motion_corrected_tiff=motion_corrected,
         max_projection_tiff=max_projection,
+        red_projection_tiff=red_projection,
         roi_path=roi_path,
     )
 
@@ -265,6 +273,7 @@ class RoiTrackerApp(ttk.Frame):
             f"Manifest: {entry.manifest_path}\n"
             f"Motion-corrected: {motion_corrected}\n"
             f"Max projection: {max_projection}\n"
+            f"Red projection: {entry.red_projection_tiff or '<none>'}\n"
             f"ROI file: {entry.roi_path}\n"
             f"ROI status: {status}\n"
             f"Inputs status: {inputs_status}"
@@ -298,6 +307,8 @@ class RoiTrackerApp(ttk.Frame):
             str(entry.roi_path),
             "--strict",
         ]
+        if entry.red_projection_exists:
+            command.extend(["--red-projection", str(entry.red_projection_tiff)])
         subprocess.Popen(command)
 
     def open_recording_folder(self) -> None:

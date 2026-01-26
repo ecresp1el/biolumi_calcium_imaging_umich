@@ -67,6 +67,7 @@ def _validate_roi_shape(roi_data: np.ndarray, movie_data: np.ndarray, strict: bo
 def launch_napari_roi_tool(
     movie_path: Path,
     max_projection_path: Path,
+    red_projection_path: Path | None,
     roi_path: Path | None,
     save_path: Path | None,
     strict: bool,
@@ -77,6 +78,9 @@ def launch_napari_roi_tool(
     viewer = napari.Viewer()
     viewer.add_image(movie, name="motion_corrected", colormap="gray")
     viewer.add_image(max_projection, name="max_projection", colormap="gray")
+    if red_projection_path is not None and red_projection_path.exists():
+        red_proj = _read_tiff(red_projection_path)
+        viewer.add_image(red_proj, name="red_projection", colormap="red", blending="additive", opacity=0.7)
 
     if roi_path is not None and roi_path.exists():
         labels_data = _read_tiff(roi_path)
@@ -112,6 +116,12 @@ def main() -> None:
         help="Path to the max projection TIFF image.",
     )
     parser.add_argument(
+        "--red-projection",
+        type=Path,
+        default=None,
+        help="Optional path to a red-channel projection TIFF (added as an overlay layer).",
+    )
+    parser.add_argument(
         "--roi",
         type=Path,
         default=None,
@@ -134,6 +144,7 @@ def main() -> None:
     launch_napari_roi_tool(
         movie_path=args.movie,
         max_projection_path=args.max_projection,
+        red_projection_path=args.red_projection,
         roi_path=args.roi,
         save_path=args.save_roi,
         strict=args.strict,
