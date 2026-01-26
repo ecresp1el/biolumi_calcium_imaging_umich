@@ -483,6 +483,166 @@ def multi_panel_boxplots_by_recording(
     print(f"[dreadd_stim_across] Wrote recording-colored multi-panel plot: {out_path}")
 
 
+def multi_panel_bars(
+    df_unsmoothed: pd.DataFrame, df_smoothed: pd.DataFrame, out_path: Path
+) -> None:
+    """Multi-panel bar (median) with jittered points, colored by group."""
+    metrics = [
+        ("peak_count", "Peak count"),
+        ("peak_rate_hz", "Peak rate (Hz)"),
+        ("peak_amplitude", "Peak amplitude (dF/F)"),
+        ("peak_fwhm_sec", "FWHM (s)"),
+        ("peak_integrated_area", "Integrated amplitude (dF/F·s)"),
+    ]
+    dfs = [("Unsmoothed", df_unsmoothed), ("Smoothed", df_smoothed)]
+    fig, axes = plt.subplots(
+        nrows=len(dfs),
+        ncols=len(metrics),
+        figsize=(15, 6),
+    )
+    if len(dfs) == 1:
+        axes = np.expand_dims(axes, axis=0)
+
+    for row_idx, (label, df) in enumerate(dfs):
+        for col_idx, (metric, title) in enumerate(metrics):
+            ax = axes[row_idx, col_idx]
+            medians = []
+            labels = []
+            scatters: list[tuple[np.ndarray, str]] = []
+            for grp, color in (("- C21", COL_MEDIA), ("+ C21", COL_C21)):
+                series = df.loc[df["group"] == grp, metric]
+                vals = filter_outliers(series) if metric in FILTER_METRICS else series.dropna()
+                if vals.empty:
+                    continue
+                medians.append(np.nanmedian(vals))
+                labels.append((grp, color))
+                scatters.append((vals.to_numpy(), color))
+            if not medians:
+                ax.set_visible(False)
+                continue
+            x_positions = np.arange(1, len(labels) + 1)
+            ax.bar(
+                x_positions,
+                medians,
+                color=[c for _, c in labels],
+                alpha=0.35,
+                edgecolor=[c for _, c in labels],
+                linewidth=1.2,
+            )
+            for xpos, (vals, color) in zip(x_positions, scatters):
+                jitter = (np.random.rand(len(vals)) - 0.5) * 0.18
+                ax.scatter(
+                    np.full(len(vals), xpos) + jitter,
+                    vals,
+                    color=color,
+                    alpha=0.75,
+                    s=14,
+                    zorder=3,
+                )
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels([g for g, _ in labels])
+            ax.set_title(f"{label} — {title}", fontsize=9)
+            ax.tick_params(axis="both", labelsize=9)
+            ax.grid(False)
+
+    fig.subplots_adjust(wspace=0.35, hspace=0.35)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    fig.savefig(out_path.with_suffix(".svg"))
+    plt.close(fig)
+    print(f"[dreadd_stim_across] Wrote multi-panel bar plot: {out_path}")
+
+
+def multi_panel_bars_by_recording(
+    df_unsmoothed: pd.DataFrame, df_smoothed: pd.DataFrame, out_path: Path
+) -> None:
+    """Multi-panel bar (median) with per-recording point colors, transparent fills."""
+    metrics = [
+        ("peak_count", "Peak count"),
+        ("peak_rate_hz", "Peak rate (Hz)"),
+        ("peak_amplitude", "Peak amplitude (dF/F)"),
+        ("peak_fwhm_sec", "FWHM (s)"),
+        ("peak_integrated_area", "Integrated amplitude (dF/F·s)"),
+    ]
+    dfs = [("Unsmoothed", df_unsmoothed), ("Smoothed", df_smoothed)]
+    fig, axes = plt.subplots(
+        nrows=len(dfs),
+        ncols=len(metrics),
+        figsize=(15, 6),
+    )
+    if len(dfs) == 1:
+        axes = np.expand_dims(axes, axis=0)
+
+    cmap_gray = colormaps.get_cmap("Greys")
+    cmap_purp = colormaps.get_cmap("Purples")
+
+    for row_idx, (label, df) in enumerate(dfs):
+        for col_idx, (metric, title) in enumerate(metrics):
+            ax = axes[row_idx, col_idx]
+            medians = []
+            labels = []
+            for grp in ("- C21", "+ C21"):
+                series = df.loc[df["group"] == grp, metric]
+                vals = filter_outliers(series) if metric in FILTER_METRICS else series.dropna()
+                if vals.empty:
+                    continue
+                medians.append(np.nanmedian(vals))
+                labels.append(grp)
+            if not medians:
+                ax.set_visible(False)
+                continue
+
+            x_positions = np.arange(1, len(labels) + 1)
+            colors_bar = [COL_MEDIA if g == "- C21" else COL_C21 for g in labels]
+            ax.bar(
+                x_positions,
+                medians,
+                color="none",
+                edgecolor=colors_bar,
+                linewidth=1.2,
+            )
+
+            for grp in ("- C21", "+ C21"):
+                sub = df.loc[df["group"] == grp]
+                if sub.empty:
+                    continue
+                recs = sorted(sub["recording"].dropna().unique())
+                if not recs:
+                    continue
+                cmap = cmap_gray if grp == "- C21" else cmap_purp
+                colors_rec = cmap(np.linspace(0.35, 0.85, len(recs)))
+                rec_to_color = dict(zip(recs, colors_rec))
+                xpos = labels.index(grp) + 1 if grp in labels else None
+                if xpos is None:
+                    continue
+                vals = filter_outliers(sub[metric]) if metric in FILTER_METRICS else sub[metric].dropna()
+                if vals.empty:
+                    continue
+                jitter = (np.random.rand(len(vals)) - 0.5) * 0.18
+                for rec_name, val, jit in zip(sub["recording"], vals, jitter):
+                    col = rec_to_color.get(rec_name, (0, 0, 0, 0.6))
+                    ax.scatter(
+                        xpos + jit,
+                        val,
+                        color=col,
+                        alpha=0.85,
+                        s=16,
+                        zorder=3,
+                    )
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels(labels)
+            ax.set_title(f"{label} — {title}", fontsize=9)
+            ax.tick_params(axis="both", labelsize=9)
+            ax.grid(False)
+
+    fig.subplots_adjust(wspace=0.35, hspace=0.35)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    fig.savefig(out_path.with_suffix(".svg"))
+    plt.close(fig)
+    print(f"[dreadd_stim_across] Wrote recording-colored bar plot: {out_path}")
+
+
 def run_stats(df: pd.DataFrame, metric_cols: list[str], smoothed_flag: bool) -> list[dict]:
     results: list[dict] = []
     if df.empty:
@@ -614,6 +774,16 @@ def main() -> None:
         metrics_unsmoothed_df,
         metrics_smoothed_df,
         out_dir / "dreadd_stim_peak_metrics_panels_by_recording.png",
+    )
+    multi_panel_bars(
+        metrics_unsmoothed_df,
+        metrics_smoothed_df,
+        out_dir / "dreadd_stim_peak_metrics_panels_bar.png",
+    )
+    multi_panel_bars_by_recording(
+        metrics_unsmoothed_df,
+        metrics_smoothed_df,
+        out_dir / "dreadd_stim_peak_metrics_panels_bar_by_recording.png",
     )
 
 
