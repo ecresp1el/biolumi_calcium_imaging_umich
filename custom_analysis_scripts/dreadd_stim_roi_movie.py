@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
 import sys
 import json
 import numpy as np
@@ -14,7 +15,7 @@ import matplotlib.pyplot as plt
 import imageio.v2 as imageio
 import tifffile as tiff
 from matplotlib import colormaps, rcParams
-from scipy.ndimage import binary_erosion
+from scipy.ndimage import binary_erosion, binary_dilation, gaussian_filter
 
 # Keep SVG text editable if needed elsewhere.
 rcParams["svg.fonttype"] = "none"
@@ -32,13 +33,17 @@ from BL_CalciumAnalysis.contracted_signal_extraction import (
 PROJECT_ROOT = Path("/Volumes/Manny4TBUM/chem_dreadd_stim_projectfolder")
 FPS = 5.0
 GENERATE_MOVIES = True
-FRAME_STRIDE = 1  # Increase (e.g., 5 or 10) to render every Nth frame for ~N× speedup.
+FRAME_STRIDE = 1  # Increase to drop frames; set 1 to keep all frames.
 TOP_K_HIGHLIGHT = 6  # Also render a second movie with the top-K most fluctuating ROIs; set to None to skip.
+OUTLINE_THICKNESS = 1  # ROI outline thickness (pixels)
+PLAYBACK_SPEED = 1.0  # Multiplier for output fps (e.g., 4.0 plays 4× faster without dropping frames)
 
 # Colors
 TRACE_CMAP = colormaps.get_cmap("tab20")
+MOVIE_CMAP = colormaps.get_cmap("plasma")
 BACKGROUND_COLOR = "black"
 TEXT_COLOR = "white"
+FRAME_SMOOTH_SIGMA = 0.6  # Gaussian sigma for light de-graining on movie frames
 
 
 def load_movie(path: Path) -> np.ndarray:
@@ -60,8 +65,8 @@ def load_roi_mask(path: Path) -> np.ndarray:
     return mask
 
 
-def roi_outlines(mask: np.ndarray) -> dict[int, np.ndarray]:
-    """Return per-ROI outline boolean masks."""
+def roi_outlines(mask: np.ndarray, thickness: int = 1) -> dict[int, np.ndarray]:
+    """Return per-ROI outline boolean masks with configurable thickness."""
     outlines: dict[int, np.ndarray] = {}
     roi_ids = np.unique(mask)
     roi_ids = roi_ids[roi_ids > 0]
@@ -71,6 +76,8 @@ def roi_outlines(mask: np.ndarray) -> dict[int, np.ndarray]:
             continue
         inner = binary_erosion(region, iterations=1, border_value=0)
         outline = region & ~inner
+        if thickness > 1:
+            outline = binary_dilation(outline, iterations=thickness - 1)
         outlines[int(rid)] = outline
     return outlines
 
@@ -78,16 +85,24 @@ def roi_outlines(mask: np.ndarray) -> dict[int, np.ndarray]:
 def to_rgb_with_outlines(
     frame: np.ndarray, outlines: dict[int, tuple[np.ndarray, np.ndarray]], lo: float, hi: float
 ) -> np.ndarray:
+    if FRAME_SMOOTH_SIGMA and FRAME_SMOOTH_SIGMA > 0:
+        frame = gaussian_filter(frame, sigma=FRAME_SMOOTH_SIGMA)
     norm = np.clip((frame - lo) / (hi - lo + 1e-9), 0, 1)
     norm = np.nan_to_num(norm, nan=0.0, posinf=1.0, neginf=0.0)
-    gray = (norm * 255).astype(np.uint8)
-    rgb = np.stack([gray, gray, gray], axis=-1)
+    rgb = (MOVIE_CMAP(norm)[..., :3] * 255).astype(np.uint8)
     for _, (outline_mask, color_rgb) in outlines.items():
         rgb[outline_mask] = color_rgb
     return rgb
 
 
-def make_movie_for_output(out, fps: float, top_k: int | None = None) -> None:
+def make_movie_for_output(
+    out,
+    fps: float,
+    top_k: int | None = None,
+    outline_thickness: int = 1,
+    frame_stride: int = 1,
+    playback_speed: float = 1.0,
+) -> None:
     rec_dir = out.analysis_dir.parent
     manifest_path = rec_dir / "processing_manifest.json"
     if not manifest_path.exists():
@@ -107,7 +122,7 @@ def make_movie_for_output(out, fps: float, top_k: int | None = None) -> None:
 
     movie = load_movie(Path(mc_path))
     mask = load_roi_mask(roi_path)
-    outlines_all = roi_outlines(mask)
+    outlines_all = roi_outlines(mask, thickness=outline_thickness)
     roi_ids_all = sorted(outlines_all.keys())
 
     # Load dF/F traces (unsmoothed) for plotting.
@@ -138,7 +153,7 @@ def make_movie_for_output(out, fps: float, top_k: int | None = None) -> None:
         c = np.array(TRACE_CMAP(idx % TRACE_CMAP.N)[:3]) * 255.0
         roi_colors_rgb[rid] = (outlines[rid], c.astype(np.uint8))
     n_frames_full = min(movie.shape[0], traces.shape[0])
-    frame_indices = np.arange(0, n_frames_full, FRAME_STRIDE, dtype=int)
+    frame_indices = np.arange(0, n_frames_full, frame_stride, dtype=int)
     movie = movie[frame_indices]
     traces = traces[frame_indices]
     times = frame_indices / float(fps)
@@ -185,16 +200,16 @@ def make_movie_for_output(out, fps: float, top_k: int | None = None) -> None:
     ax_trace.set_ylim(-0.2, offsets[-1] + 1.2)
     ax_trace.set_yticks([])
     ax_trace.set_xlabel("Time (s)", color=TEXT_COLOR)
-    ax_trace.set_ylabel("dF/F (0-1, staggered)", color=TEXT_COLOR)
+    ax_trace.set_ylabel("dF/F", color=TEXT_COLOR)
     ax_trace.tick_params(colors=TEXT_COLOR)
     for spine in ax_trace.spines.values():
         spine.set_color(TEXT_COLOR)
-    title = rec_dir.name if top_k is None else f"{rec_dir.name} (top {top_k} ROIs)"
-    ax_trace.set_title(title, color=TEXT_COLOR)
+    # No title; filename is sufficient.
 
     plt.tight_layout()
 
-    with imageio.get_writer(out_path, fps=fps, codec="libx264", format="ffmpeg") as wri:
+    playback_fps = fps * max(playback_speed, 0.1)
+    with imageio.get_writer(out_path, fps=playback_fps, codec="libx264", format="ffmpeg") as wri:
         for i in range(n_frames):
             rgb = to_rgb_with_outlines(movie[i], roi_colors_rgb, lo, hi)
             im_artist.set_data(rgb)
@@ -210,17 +225,41 @@ def make_movie_for_output(out, fps: float, top_k: int | None = None) -> None:
 
 
 def main() -> None:
-    cfg = ContractConfig(fps=FPS)
-    outputs = process_project_root(PROJECT_ROOT, fps=FPS, config=cfg)
-    if not GENERATE_MOVIES:
-        print("[movie] GENERATE_MOVIES=False, skipping.")
+    parser = argparse.ArgumentParser(description="Make ROI/trace movies.")
+    parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT, help="Project root containing recordings.")
+    parser.add_argument("--fps", type=float, default=FPS, help="Acquisition fps.")
+    parser.add_argument("--frame-stride", type=int, default=FRAME_STRIDE, help="Render every Nth frame (speedup).")
+    parser.add_argument("--playback-speed", type=float, default=PLAYBACK_SPEED, help="Playback speed multiplier (e.g., 4.0 to play 4× faster without dropping frames).")
+    parser.add_argument("--top-k-highlight", type=int, default=TOP_K_HIGHLIGHT, help="Render an additional movie with top-K fluctuating ROIs (set <=0 to skip).")
+    parser.add_argument("--outline-thickness", type=int, default=OUTLINE_THICKNESS, help="ROI outline thickness in pixels.")
+    parser.add_argument("--generate-movies", action="store_true", default=GENERATE_MOVIES, help="Set to render movies (default from file).")
+    args = parser.parse_args()
+
+    cfg = ContractConfig(fps=args.fps)
+    outputs = process_project_root(args.project_root, fps=args.fps, config=cfg)
+    if not args.generate_movies:
+        print("[movie] --generate-movies not set; skipping renders.")
         return
     for out in outputs:
         # Render full set
-        make_movie_for_output(out, fps=FPS, top_k=None)
+        make_movie_for_output(
+            out,
+            fps=args.fps,
+            top_k=None,
+            outline_thickness=args.outline_thickness,
+            frame_stride=args.frame_stride,
+            playback_speed=args.playback_speed,
+        )
         # Render top-K if requested
-        if TOP_K_HIGHLIGHT is not None and TOP_K_HIGHLIGHT > 0:
-            make_movie_for_output(out, fps=FPS, top_k=TOP_K_HIGHLIGHT)
+        if args.top_k_highlight is not None and args.top_k_highlight > 0:
+            make_movie_for_output(
+                out,
+                fps=args.fps,
+                top_k=args.top_k_highlight,
+                outline_thickness=args.outline_thickness,
+                frame_stride=args.frame_stride,
+                playback_speed=args.playback_speed,
+            )
 
 
 if __name__ == "__main__":
