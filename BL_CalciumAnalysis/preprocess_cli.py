@@ -10,7 +10,7 @@ from BL_CalciumAnalysis.pipeline import MotionCorrectionConfig, MotionCorrection
 
 def _collect_ims_paths(ims_path: Path) -> list[Path]:
     if ims_path.is_dir():
-        ims_files = sorted(ims_path.glob("*.ims"))
+        ims_files = [p for p in sorted(ims_path.glob("*.ims")) if not p.name.startswith("._")]
         if not ims_files:
             raise FileNotFoundError(f"No .ims files found in directory: {ims_path}")
         return ims_files
@@ -84,6 +84,22 @@ def build_parser() -> argparse.ArgumentParser:
         metavar=("Y", "X"),
         help="Gaussian filter sigma for motion correction.",
     )
+    parser.add_argument(
+        "--save-red-projection",
+        action="store_true",
+        help="If set, also save a max projection from the red channel (no motion correction).",
+    )
+    parser.add_argument(
+        "--red-channel-index",
+        type=int,
+        default=1,
+        help="Channel index for the red projection (default 1).",
+    )
+    parser.add_argument(
+        "--red-no-collapse-z",
+        action="store_true",
+        help="If set, do not collapse Z for the red projection (expects 2D frames).",
+    )
     return parser
 
 
@@ -100,6 +116,9 @@ def main() -> None:
         strides=tuple(args.strides),
         overlaps=tuple(args.overlaps),
         gsig_filt=tuple(args.gsig_filt),
+        save_red_projection=args.save_red_projection,
+        red_channel_index=args.red_channel_index,
+        red_collapse_z=not args.red_no_collapse_z,
     )
 
     ims_paths = _collect_ims_paths(args.ims)

@@ -24,6 +24,10 @@ class MotionCorrectionConfig:
     strides: tuple[int, int] = (48, 48)
     overlaps: tuple[int, int] = (24, 24)
     gsig_filt: tuple[int, int] = (3, 3)
+    save_red_projection: bool = False
+    red_channel_index: int = 1
+    red_collapse_z: bool = True
+    green_collapse_z_for_projection: bool = True
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,8 @@ class RecordingPaths:
     max_projection: Path
     avg_projection: Path
     std_projection: Path
+    red_projection: Path | None
+    green_raw_projection: Path | None
     manifest_path: Path
 
     @staticmethod
@@ -53,6 +59,8 @@ class RecordingPaths:
         max_projection = projections_dir / f"{stem}_MAXPROJ.tif"
         avg_projection = projections_dir / f"{stem}_AVGPROJ.tif"
         std_projection = projections_dir / f"{stem}_STDPROJ.tif"
+        red_projection = projections_dir / f"{stem}_RED_MAXPROJ.tif"
+        green_raw_projection = projections_dir / f"{stem}_GREEN_RAW_MAXPROJ.tif"
         manifest_path = base_dir / "processing_manifest.json"
 
         return RecordingPaths(
@@ -65,6 +73,8 @@ class RecordingPaths:
             max_projection=max_projection,
             avg_projection=avg_projection,
             std_projection=std_projection,
+            red_projection=red_projection,
+            green_raw_projection=green_raw_projection,
             manifest_path=manifest_path,
         )
 
@@ -170,6 +180,64 @@ class MotionCorrectionPipeline:
         print(f"  STD → {self.paths.std_projection}")
         return self.paths.max_projection, self.paths.avg_projection, self.paths.std_projection
 
+    def _extract_channel_maxproj(
+        self,
+        channel_index: int,
+        collapse_z: bool,
+        label: str,
+        out_path: Path,
+    ) -> Path | None:
+        frames: list[np.ndarray] = []
+        with h5py.File(self.ims_path, "r") as file_handle:
+            dataset = file_handle["DataSet"]
+            res_group = dataset[f"ResolutionLevel {self.config.res_level}"]
+            tp_keys = [key for key in res_group.keys() if key.startswith("TimePoint ")]
+            tp_keys = sorted(tp_keys, key=lambda key: int(key.split(" ")[1]))
+            for key in tp_keys:
+                tp_group = res_group[key]
+                chan_key = f"Channel {channel_index}"
+                if chan_key not in tp_group:
+                    raise KeyError(f"{chan_key} not found")
+                channel_group = tp_group[chan_key]
+                data = channel_group["Data"][()]
+                if data.ndim == 3:
+                    if collapse_z:
+                        frame = data.max(axis=0) if data.shape[0] > 1 else data[0]
+                    else:
+                        raise ValueError(f"Expected 2D frames when collapse_z=False for {label}, got {data.shape}")
+                elif data.ndim == 2:
+                    frame = data
+                else:
+                    raise ValueError(f"Unexpected data shape for {key}/{chan_key}: {data.shape}")
+                frames.append(frame)
+        if not frames:
+            print(f"[{label}] No frames extracted; skipping.")
+            return None
+        stack = np.stack(frames, axis=0)
+        max_proj = stack.max(axis=0)
+        self._ensure_dirs([self.paths.projections_dir])
+        tiff.imwrite(out_path, max_proj.astype("float32"))
+        print(f"[{label}] Saved max projection: {out_path}")
+        return out_path
+
+    def save_dual_channel_projections_if_requested(self) -> tuple[Path | None, Path | None]:
+        if not self.config.save_red_projection:
+            return None, None
+        print(f"[dual_proj] Extracting green (channel {self.config.channel}) and red (channel {self.config.red_channel_index}) max projections (no motion correction) from {self.ims_path}")
+        green_path = self._extract_channel_maxproj(
+            channel_index=self.config.channel,
+            collapse_z=self.config.green_collapse_z_for_projection,
+            label="green_projection",
+            out_path=self.paths.green_raw_projection,
+        )
+        red_path = self._extract_channel_maxproj(
+            channel_index=self.config.red_channel_index,
+            collapse_z=self.config.red_collapse_z,
+            label="red_projection",
+            out_path=self.paths.red_projection,
+        )
+        return green_path, red_path
+
     def write_manifest(self) -> None:
         payload = {
             "ims_path": str(self.ims_path),
@@ -182,13 +250,23 @@ class MotionCorrectionPipeline:
             },
             "config": asdict(self.config),
         }
+        if self.config.save_red_projection:
+            if self.paths.red_projection.exists():
+                payload["paths"]["red_projection"] = str(self.paths.red_projection)
+            if self.paths.green_raw_projection.exists():
+                payload["paths"]["green_raw_projection"] = str(self.paths.green_raw_projection)
         self.paths.base_dir.mkdir(parents=True, exist_ok=True)
         self.paths.manifest_path.write_text(json.dumps(payload, indent=2))
         print(f"[manifest] Saved processing manifest: {self.paths.manifest_path}")
 
     def run(self) -> RecordingPaths:
-        raw_tiff = self.convert_ims_movie_to_tiff()
-        _, movie = self.motion_correct(raw_tiff)
-        self.save_projections(movie)
-        self.write_manifest()
-        return self.paths
+        try:
+            raw_tiff = self.convert_ims_movie_to_tiff()
+            _, movie = self.motion_correct(raw_tiff)
+            self.save_projections(movie)
+            self.save_dual_channel_projections_if_requested()
+            self.write_manifest()
+            return self.paths
+        except Exception as exc:  # noqa: BLE001
+            print(f"[pipeline] Skipping {self.ims_path} due to error: {exc}")
+            return self.paths
