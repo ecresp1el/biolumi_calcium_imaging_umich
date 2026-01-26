@@ -188,28 +188,33 @@ class MotionCorrectionPipeline:
         out_path: Path,
     ) -> Path | None:
         frames: list[np.ndarray] = []
-        with h5py.File(self.ims_path, "r") as file_handle:
-            dataset = file_handle["DataSet"]
-            res_group = dataset[f"ResolutionLevel {self.config.res_level}"]
-            tp_keys = [key for key in res_group.keys() if key.startswith("TimePoint ")]
-            tp_keys = sorted(tp_keys, key=lambda key: int(key.split(" ")[1]))
-            for key in tp_keys:
-                tp_group = res_group[key]
-                chan_key = f"Channel {channel_index}"
-                if chan_key not in tp_group:
-                    raise KeyError(f"{chan_key} not found")
-                channel_group = tp_group[chan_key]
-                data = channel_group["Data"][()]
-                if data.ndim == 3:
-                    if collapse_z:
-                        frame = data.max(axis=0) if data.shape[0] > 1 else data[0]
+        try:
+            with h5py.File(self.ims_path, "r") as file_handle:
+                dataset = file_handle["DataSet"]
+                res_group = dataset[f"ResolutionLevel {self.config.res_level}"]
+                tp_keys = [key for key in res_group.keys() if key.startswith("TimePoint ")]
+                tp_keys = sorted(tp_keys, key=lambda key: int(key.split(" ")[1]))
+                for key in tp_keys:
+                    tp_group = res_group[key]
+                    chan_key = f"Channel {channel_index}"
+                    if chan_key not in tp_group:
+                        raise KeyError(f"{chan_key} not found")
+                    channel_group = tp_group[chan_key]
+                    data = channel_group["Data"][()]
+                    if data.ndim == 3:
+                        if collapse_z:
+                            frame = data.max(axis=0) if data.shape[0] > 1 else data[0]
+                        else:
+                            raise ValueError(f"Expected 2D frames when collapse_z=False for {label}, got {data.shape}")
+                    elif data.ndim == 2:
+                        frame = data
                     else:
-                        raise ValueError(f"Expected 2D frames when collapse_z=False for {label}, got {data.shape}")
-                elif data.ndim == 2:
-                    frame = data
-                else:
-                    raise ValueError(f"Unexpected data shape for {key}/{chan_key}: {data.shape}")
-                frames.append(frame)
+                        raise ValueError(f"Unexpected data shape for {key}/{chan_key}: {data.shape}")
+                    frames.append(frame)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{label}] Skipping channel {channel_index}: {exc}")
+            return None
+
         if not frames:
             print(f"[{label}] No frames extracted; skipping.")
             return None
@@ -221,7 +226,10 @@ class MotionCorrectionPipeline:
         return out_path
 
     def save_dual_channel_projections_if_requested(self) -> tuple[Path | None, Path | None]:
-        if not self.config.save_red_projection:
+        # Trigger if explicitly requested or if filename suggests dual channel.
+        name_lower = self.ims_path.name.lower()
+        auto_dual = "red" in name_lower and "green" in name_lower
+        if not (self.config.save_red_projection or auto_dual):
             return None, None
         print(f"[dual_proj] Extracting green (channel {self.config.channel}) and red (channel {self.config.red_channel_index}) max projections (no motion correction) from {self.ims_path}")
         green_path = self._extract_channel_maxproj(
@@ -262,7 +270,16 @@ class MotionCorrectionPipeline:
     def run(self) -> RecordingPaths:
         try:
             raw_tiff = self.convert_ims_movie_to_tiff()
-            _, movie = self.motion_correct(raw_tiff)
+            # If very short movies (e.g., 3 frames for dual-channel overlays), skip motion correction.
+            movie_raw = tiff.imread(raw_tiff).astype("float32")
+            n_frames = movie_raw.shape[0] if movie_raw.ndim == 3 else 0
+            if n_frames <= 5:
+                print(f"[pipeline] Skipping motion correction (short movie with {n_frames} frames).")
+                self._ensure_dirs([self.paths.motion_corrected_dir])
+                tiff.imwrite(str(self.paths.motion_corrected_tiff), movie_raw)
+                movie = movie_raw
+            else:
+                _, movie = self.motion_correct(raw_tiff)
             self.save_projections(movie)
             self.save_dual_channel_projections_if_requested()
             self.write_manifest()
