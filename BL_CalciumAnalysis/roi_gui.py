@@ -23,6 +23,7 @@ class RecordingEntry:
     max_projection_tiff: Path | None
     red_projection_tiff: Path | None
     roi_path: Path
+    red_roi_path: Path
 
     @property
     def roi_exists(self) -> bool:
@@ -43,6 +44,10 @@ class RecordingEntry:
     @property
     def ready_for_roi(self) -> bool:
         return self.motion_corrected_exists and self.max_projection_exists
+
+    @property
+    def red_roi_exists(self) -> bool:
+        return self.red_roi_path.exists()
 
 
 def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
@@ -67,6 +72,7 @@ def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
     red_projection = Path(red_projection_raw) if red_projection_raw else None
 
     roi_path = manifest_path.parent / "rois" / f"{recording_name}_roi_masks_uint16.tif"
+    red_roi_path = manifest_path.parent / "rois" / f"{recording_name}_red_roi_masks_uint16.tif"
 
     return RecordingEntry(
         name=recording_name,
@@ -75,6 +81,7 @@ def _load_manifest(manifest_path: Path) -> RecordingEntry | None:
         max_projection_tiff=max_projection,
         red_projection_tiff=red_projection,
         roi_path=roi_path,
+        red_roi_path=red_roi_path,
     )
 
 
@@ -129,8 +136,8 @@ class RoiTrackerApp(ttk.Frame):
         self.summary_label.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
         pending_frame = ttk.LabelFrame(self, text="Needs ROI")
-        completed_frame = ttk.LabelFrame(self, text="ROI Complete")
-        missing_frame = ttk.LabelFrame(self, text="Missing Inputs")
+        completed_frame = ttk.LabelFrame(self, text="ROI Complete (green and red when available)")
+        missing_frame = ttk.LabelFrame(self, text="Missing Inputs / Red ROIs")
         pending_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
         completed_frame.grid(row=1, column=1, sticky="nsew", padx=(0, 8))
         missing_frame.grid(row=1, column=2, sticky="nsew")
@@ -186,18 +193,29 @@ class RoiTrackerApp(ttk.Frame):
         ttk.Button(button_frame, text="Open ROI Editor", command=self.open_roi_editor).grid(
             row=0, column=1, padx=8
         )
+        ttk.Button(button_frame, text="Open ROI Editor (with Red)", command=self.open_roi_editor_with_red).grid(
+            row=0, column=2, padx=8
+        )
         ttk.Button(button_frame, text="Open Recording Folder", command=self.open_recording_folder).grid(
-            row=0, column=2
+            row=0, column=3
         )
         ttk.Button(button_frame, text="Process ROI Traces", command=self.process_roi_traces).grid(
-            row=0, column=3, padx=8
+            row=0, column=4, padx=8
         )
 
     def refresh(self) -> None:
         entries = load_recordings(self.project_root)
         self.pending_entries = [entry for entry in entries if entry.ready_for_roi and not entry.roi_exists]
-        self.completed_entries = [entry for entry in entries if entry.roi_exists]
-        self.missing_entries = [entry for entry in entries if not entry.ready_for_roi]
+        self.completed_entries = [
+            entry
+            for entry in entries
+            if entry.roi_exists and (not entry.red_projection_exists or entry.red_roi_exists)
+        ]
+        self.missing_entries = [
+            entry
+            for entry in entries
+            if (not entry.ready_for_roi) or (entry.red_projection_exists and not entry.red_roi_exists)
+        ]
 
         print(
             "[roi_gui] Refresh summary: "
@@ -222,7 +240,7 @@ class RoiTrackerApp(ttk.Frame):
             f"Found {len(entries)} recording(s) • "
             f"Needs ROI: {len(self.pending_entries)} • "
             f"ROI Complete: {len(self.completed_entries)} • "
-            f"Missing Inputs: {len(self.missing_entries)}"
+            f"Missing Inputs/Red ROIs: {len(self.missing_entries)}"
         )
         self.summary_label.configure(text=summary)
 
@@ -267,6 +285,7 @@ class RoiTrackerApp(ttk.Frame):
         motion_corrected = entry.motion_corrected_tiff or Path("<missing>")
         max_projection = entry.max_projection_tiff or Path("<missing>")
         status = "✅ complete" if entry.roi_exists else "⚠️ missing"
+        red_status = "✅ red ROI present" if entry.red_roi_exists else "⚠️ red ROI missing"
         inputs_status = "ready" if entry.ready_for_roi else "missing inputs"
         detail = (
             f"Recording: {entry.name}\n"
@@ -275,7 +294,9 @@ class RoiTrackerApp(ttk.Frame):
             f"Max projection: {max_projection}\n"
             f"Red projection: {entry.red_projection_tiff or '<none>'}\n"
             f"ROI file: {entry.roi_path}\n"
+            f"Red ROI file: {entry.red_roi_path}\n"
             f"ROI status: {status}\n"
+            f"Red ROI status: {red_status}\n"
             f"Inputs status: {inputs_status}"
         )
         self._set_detail_text(detail)
@@ -310,6 +331,63 @@ class RoiTrackerApp(ttk.Frame):
         if entry.red_projection_exists:
             command.extend(["--red-projection", str(entry.red_projection_tiff)])
         subprocess.Popen(command)
+
+    def open_roi_editor_with_red(self) -> None:
+        entry = self._selected_entry
+        if entry is None:
+            messagebox.showinfo("ROI Editor", "Select a recording first.")
+            return
+        if not entry.ready_for_roi:
+            messagebox.showwarning(
+                "ROI Editor",
+                "This recording is missing the motion-corrected movie or max projection.",
+            )
+            return
+        if not entry.red_projection_exists:
+            red_path = self._find_partner_red_projection(entry)
+            if red_path is None:
+                messagebox.showwarning(
+                    "ROI Editor",
+                    "No red projection found for this recording or its paired red file.",
+                )
+                return
+        else:
+            red_path = entry.red_projection_tiff
+
+        entry.roi_path.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            sys.executable,
+            "-m",
+            "BL_CalciumAnalysis.napari_roi_cli",
+            "--movie",
+            str(entry.motion_corrected_tiff),
+            "--max-projection",
+            str(entry.max_projection_tiff),
+            "--red-projection",
+            str(red_path),
+            "--roi",
+            str(entry.roi_path),
+            "--red-roi",
+            str(entry.red_roi_path),
+            "--save-roi",
+            str(entry.roi_path),
+            "--save-red-roi",
+            str(entry.red_roi_path),
+            "--strict",
+        ]
+        subprocess.Popen(command)
+
+    def _find_partner_red_projection(self, entry: RecordingEntry) -> Path | None:
+        """Try to locate a paired red projection based on naming convention."""
+        name = entry.name
+        if "Green_Confocal - Red" in name:
+            return None
+        candidate_name = name.replace(" - Green", " - Green_Confocal - Red")
+        base = entry.manifest_path.parent.parent
+        candidate_proj = base / candidate_name / "projections" / f"{candidate_name}_RED_MAXPROJ.tif"
+        if candidate_proj.exists():
+            return candidate_proj
+        return None
 
     def open_recording_folder(self) -> None:
         entry = self._selected_entry

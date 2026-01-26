@@ -69,7 +69,9 @@ def launch_napari_roi_tool(
     max_projection_path: Path,
     red_projection_path: Path | None,
     roi_path: Path | None,
+    red_roi_path: Path | None,
     save_path: Path | None,
+    save_red_roi_path: Path | None,
     strict: bool,
 ) -> None:
     movie = _read_tiff(movie_path)
@@ -89,6 +91,13 @@ def launch_napari_roi_tool(
     else:
         viewer.add_labels(np.zeros_like(movie, dtype=np.uint16), name="roi_labels")
 
+    if red_roi_path is not None and red_roi_path.exists():
+        red_labels_data = _read_tiff(red_roi_path)
+        _validate_roi_shape(red_labels_data, movie, strict)
+        viewer.add_labels(red_labels_data, name="red_roi_labels")
+    elif red_roi_path is not None:
+        viewer.add_labels(np.zeros_like(movie, dtype=np.uint16), name="red_roi_labels")
+
     napari.run()
 
     if save_path is not None:
@@ -97,6 +106,13 @@ def launch_napari_roi_tool(
         _write_tiff(save_path, labels_data)
         print(_summarize_roi_labels(labels_data))
         print(f"📁 Saved to: {save_path}")
+
+    if save_red_roi_path is not None and "red_roi_labels" in viewer.layers:
+        red_layer = viewer.layers["red_roi_labels"]
+        red_data = np.asarray(red_layer.data)
+        _write_tiff(save_red_roi_path, red_data)
+        print(_summarize_roi_labels(red_data))
+        print(f"📁 Saved red ROI to: {save_red_roi_path}")
 
 
 def main() -> None:
@@ -120,6 +136,18 @@ def main() -> None:
         type=Path,
         default=None,
         help="Optional path to a red-channel projection TIFF (added as an overlay layer).",
+    )
+    parser.add_argument(
+        "--red-roi",
+        type=Path,
+        default=None,
+        help="Optional path to an existing red ROI labels TIFF.",
+    )
+    parser.add_argument(
+        "--save-red-roi",
+        type=Path,
+        default=None,
+        help="Optional output path to save red ROI labels TIFF on close.",
     )
     parser.add_argument(
         "--roi",
@@ -146,7 +174,9 @@ def main() -> None:
         max_projection_path=args.max_projection,
         red_projection_path=args.red_projection,
         roi_path=args.roi,
+        red_roi_path=args.red_roi,
         save_path=args.save_roi,
+        save_red_roi_path=args.save_red_roi,
         strict=args.strict,
     )
 
