@@ -32,9 +32,10 @@ from BL_CalciumAnalysis.contracted_signal_extraction import (
 PROJECT_ROOT = Path("/Volumes/Manny4TBUM/chem_dreadd_stim_projectfolder")
 FPS = 5.0
 GENERATE_MOVIES = True
+FRAME_STRIDE = 1  # Increase (e.g., 5 or 10) to render every Nth frame for ~N× speedup.
+TOP_K_HIGHLIGHT = 6  # Also render a second movie with the top-K most fluctuating ROIs; set to None to skip.
 
 # Colors
-ROI_OUTLINE_COLOR = np.array([0, 255, 0], dtype=np.uint8)  # green outlines
 TRACE_CMAP = colormaps.get_cmap("tab20")
 BACKGROUND_COLOR = "black"
 TEXT_COLOR = "white"
@@ -74,17 +75,19 @@ def roi_outlines(mask: np.ndarray) -> dict[int, np.ndarray]:
     return outlines
 
 
-def to_rgb_with_outlines(frame: np.ndarray, outlines: dict[int, np.ndarray], lo: float, hi: float) -> np.ndarray:
+def to_rgb_with_outlines(
+    frame: np.ndarray, outlines: dict[int, tuple[np.ndarray, np.ndarray]], lo: float, hi: float
+) -> np.ndarray:
     norm = np.clip((frame - lo) / (hi - lo + 1e-9), 0, 1)
     norm = np.nan_to_num(norm, nan=0.0, posinf=1.0, neginf=0.0)
     gray = (norm * 255).astype(np.uint8)
     rgb = np.stack([gray, gray, gray], axis=-1)
-    for outline in outlines.values():
-        rgb[outline] = ROI_OUTLINE_COLOR
+    for _, (outline_mask, color_rgb) in outlines.items():
+        rgb[outline_mask] = color_rgb
     return rgb
 
 
-def make_movie_for_output(out, fps: float) -> None:
+def make_movie_for_output(out, fps: float, top_k: int | None = None) -> None:
     rec_dir = out.analysis_dir.parent
     manifest_path = rec_dir / "processing_manifest.json"
     if not manifest_path.exists():
@@ -104,34 +107,63 @@ def make_movie_for_output(out, fps: float) -> None:
 
     movie = load_movie(Path(mc_path))
     mask = load_roi_mask(roi_path)
-    outlines = roi_outlines(mask)
+    outlines_all = roi_outlines(mask)
+    roi_ids_all = sorted(outlines_all.keys())
 
     # Load dF/F traces (unsmoothed) for plotting.
     traces_df = pd.read_csv(out.sliding_dff_csv, index_col=0)
-    roi_cols = sorted(traces_df.columns, key=lambda x: int(x))
-    traces = traces_df[roi_cols].to_numpy()
-    n_frames = min(movie.shape[0], traces.shape[0])
-    movie = movie[:n_frames]
-    traces = traces[:n_frames]
-    times = np.arange(n_frames) / float(fps)
+    roi_cols_all = sorted(traces_df.columns, key=lambda x: int(x))
+    traces_all = traces_df[roi_cols_all].to_numpy()
+
+    # Select top-K ROIs by standard deviation (fluctuations) if requested.
+    if top_k is not None and top_k > 0:
+        stds = []
+        for idx, col in enumerate(roi_cols_all):
+            stds.append((float(np.nanstd(traces_all[:, idx])), col, idx))
+        stds.sort(reverse=True, key=lambda x: x[0])
+        top = stds[: min(top_k, len(stds))]
+        roi_cols = [col for _, col, _ in top]
+        idx_map = [idx for _, _, idx in top]
+    else:
+        roi_cols = roi_cols_all
+        idx_map = list(range(len(roi_cols_all)))
+
+    traces = traces_all[:, idx_map]
+
+    # Filter outlines to selected ROIs.
+    outlines = {rid: outlines_all[rid] for rid in outlines_all if str(rid) in roi_cols}
+    roi_ids = sorted(outlines.keys(), key=int)
+    roi_colors_rgb: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for idx, rid in enumerate(roi_ids):
+        c = np.array(TRACE_CMAP(idx % TRACE_CMAP.N)[:3]) * 255.0
+        roi_colors_rgb[rid] = (outlines[rid], c.astype(np.uint8))
+    n_frames_full = min(movie.shape[0], traces.shape[0])
+    frame_indices = np.arange(0, n_frames_full, FRAME_STRIDE, dtype=int)
+    movie = movie[frame_indices]
+    traces = traces[frame_indices]
+    times = frame_indices / float(fps)
+    n_frames = len(frame_indices)
 
     lo, hi = np.nanpercentile(movie, [1, 99])
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         lo, hi = 0.0, float(np.nanmax(movie))
 
-    # Precompute y-limits
-    y_min = np.nanmin(traces)
-    y_max = np.nanmax(traces)
-    if not np.isfinite(y_min) or not np.isfinite(y_max):
-        print(f"[movie] Skipping {rec_dir.name}: invalid traces.")
-        return
-    padding = 0.05 * (y_max - y_min + 1e-6)
-    y_min -= padding
-    y_max += padding
+    # Normalize traces to 0-1 per ROI and stagger vertically.
+    traces_norm = np.zeros_like(traces)
+    offsets = np.arange(len(roi_cols)) * 1.2
+    for idx in range(len(roi_cols)):
+        t = traces[:, idx]
+        t_min = np.nanmin(t)
+        t_max = np.nanmax(t)
+        if not np.isfinite(t_min) or not np.isfinite(t_max) or t_max - t_min <= 0:
+            traces_norm[:, idx] = 0.0
+        else:
+            traces_norm[:, idx] = np.clip((t - t_min) / (t_max - t_min), 0, 1)
 
     out_dir = rec_dir / "roi_analysis_contract" / "movies"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{rec_dir.name}_roi_traces_movie.mp4"
+    suffix = f"_top{top_k}" if top_k is not None else "_all"
+    out_path = out_dir / f"{rec_dir.name}_roi_traces_movie{suffix}.mp4"
 
     fig, (ax_img, ax_trace) = plt.subplots(
         1, 2, figsize=(12, 6), facecolor=BACKGROUND_COLOR, gridspec_kw={"width_ratios": [1, 1]}
@@ -140,31 +172,35 @@ def make_movie_for_output(out, fps: float) -> None:
         ax.set_facecolor(BACKGROUND_COLOR)
 
     ax_img.axis("off")
-    frame0_rgb = to_rgb_with_outlines(movie[0], outlines, lo, hi)
+    frame0_rgb = to_rgb_with_outlines(movie[0], roi_colors_rgb, lo, hi)
     im_artist = ax_img.imshow(frame0_rgb)
 
     lines = []
     for idx, col in enumerate(roi_cols):
         color = TRACE_CMAP(idx % TRACE_CMAP.N)
-        line, = ax_trace.plot(times, traces[:, idx], color=color, linewidth=1.0, alpha=0.8)
+        line, = ax_trace.plot([], [], color=color, linewidth=1.0, alpha=0.9)
         lines.append(line)
     vline = ax_trace.axvline(0, color="yellow", linestyle="--", linewidth=1.0, alpha=0.8)
     ax_trace.set_xlim(times[0], times[-1])
-    ax_trace.set_ylim(y_min, y_max)
+    ax_trace.set_ylim(-0.2, offsets[-1] + 1.2)
+    ax_trace.set_yticks([])
     ax_trace.set_xlabel("Time (s)", color=TEXT_COLOR)
-    ax_trace.set_ylabel("dF/F", color=TEXT_COLOR)
+    ax_trace.set_ylabel("dF/F (0-1, staggered)", color=TEXT_COLOR)
     ax_trace.tick_params(colors=TEXT_COLOR)
     for spine in ax_trace.spines.values():
         spine.set_color(TEXT_COLOR)
-    ax_trace.set_title(rec_dir.name, color=TEXT_COLOR)
+    title = rec_dir.name if top_k is None else f"{rec_dir.name} (top {top_k} ROIs)"
+    ax_trace.set_title(title, color=TEXT_COLOR)
 
     plt.tight_layout()
 
     with imageio.get_writer(out_path, fps=fps, codec="libx264", format="ffmpeg") as wri:
         for i in range(n_frames):
-            rgb = to_rgb_with_outlines(movie[i], outlines, lo, hi)
+            rgb = to_rgb_with_outlines(movie[i], roi_colors_rgb, lo, hi)
             im_artist.set_data(rgb)
             vline.set_xdata([times[i], times[i]])
+            for idx, line in enumerate(lines):
+                line.set_data(times[: i + 1], traces_norm[: i + 1, idx] + offsets[idx])
             fig.canvas.draw()
             frame_rgba = np.asarray(fig.canvas.buffer_rgba())
             wri.append_data(frame_rgba)
@@ -180,7 +216,11 @@ def main() -> None:
         print("[movie] GENERATE_MOVIES=False, skipping.")
         return
     for out in outputs:
-        make_movie_for_output(out, fps=FPS)
+        # Render full set
+        make_movie_for_output(out, fps=FPS, top_k=None)
+        # Render top-K if requested
+        if TOP_K_HIGHLIGHT is not None and TOP_K_HIGHLIGHT > 0:
+            make_movie_for_output(out, fps=FPS, top_k=TOP_K_HIGHLIGHT)
 
 
 if __name__ == "__main__":
