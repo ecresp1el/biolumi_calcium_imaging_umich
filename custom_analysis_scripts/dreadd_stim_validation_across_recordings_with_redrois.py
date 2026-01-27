@@ -8,7 +8,9 @@ import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib import colormaps, rcParams
+import tifffile as tiff
+from matplotlib import colormaps, colors, rcParams
+from scipy.ndimage import binary_dilation, binary_erosion
 from scipy.signal import peak_widths
 from scipy.stats import mannwhitneyu
 import warnings
@@ -33,6 +35,7 @@ Z_THRESHOLD = 1.0
 SMOOTH_WINDOW_SEC = 1.0
 COL_MEDIA = "#666666"
 COL_C21 = "#6a1b9a"
+CMAP_NAME = "magma"
 
 
 def label_group(rec_name: str) -> str:
@@ -71,6 +74,116 @@ def find_partner_red_roi(green_rec_dir: Path) -> Path | None:
         # pick the first sorted
         return sorted(candidates)[0]
     return None
+
+
+def find_partner_red_rec_dir(green_rec_dir: Path) -> Path | None:
+    """Heuristic to locate paired red recording directory for a green recording."""
+    base = green_rec_dir.name.replace(" - Green_Confocal - Red", "").replace(" - Green", "")
+    parent = green_rec_dir.parent
+    for d in sorted(parent.iterdir()):
+        if not d.is_dir():
+            continue
+        if base in d.name and "red" in d.name.lower():
+            return d
+    return None
+
+
+def _load_tiff_max(path: Path) -> np.ndarray:
+    """Load a TIFF stack and return max projection as float array."""
+    arr = tiff.imread(path)
+    if arr.ndim == 4 and arr.shape[-1] in (1, 3):
+        arr = arr.mean(axis=-1)
+    if arr.ndim == 3:
+        arr = arr.max(axis=0)
+    if arr.ndim != 2:
+        raise ValueError(f"Unexpected TIFF shape {arr.shape} for {path}")
+    return arr.astype(float)
+
+
+def _load_roi_mask(path: Path) -> np.ndarray:
+    mask = tiff.imread(path)
+    if mask.ndim == 3 and mask.shape[0] > 1:
+        mask = mask.max(axis=0)
+    if mask.ndim != 2:
+        raise ValueError(f"ROI mask must be 2D, got {mask.shape}")
+    return mask
+
+
+def _roi_outlines(mask: np.ndarray, thickness: int = 1) -> dict[int, np.ndarray]:
+    outlines: dict[int, np.ndarray] = {}
+    roi_ids = np.unique(mask)
+    roi_ids = roi_ids[roi_ids > 0]
+    for rid in roi_ids:
+        region = mask == rid
+        if not region.any():
+            continue
+        inner = binary_erosion(region, iterations=1, border_value=0)
+        outline = region & ~inner
+        if thickness > 1:
+            outline = binary_dilation(outline, iterations=thickness - 1)
+        outlines[int(rid)] = outline
+    return outlines
+
+
+def _normalize_to_rgb(arr: np.ndarray, cmap, lo: float | None = None, hi: float | None = None) -> np.ndarray:
+    """Normalize array to 0-1 using percentiles if lo/hi missing, return RGB 0-1."""
+    if lo is None or hi is None:
+        lo, hi = np.nanpercentile(arr, [1, 99])
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo, hi = 0.0, max(1.0, float(np.nanmax(arr)))
+    norm = np.clip((arr - lo) / (hi - lo + 1e-9), 0, 1)
+    norm = np.nan_to_num(norm, nan=0.0, posinf=1.0, neginf=0.0)
+    return cmap(norm)[..., :3]
+
+
+def save_max_projection_panels(green_mc_tiff: Path, red_mc_tiff: Path, red_roi_mask: Path, out_dir: Path, stem: str) -> None:
+    """Save high-res PNG with green max, red max, merge, and green with red ROI outlines."""
+    cmap = colormaps.get_cmap(CMAP_NAME)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    green_max = _load_tiff_max(green_mc_tiff)
+    red_max = _load_tiff_max(red_mc_tiff)
+    roi_mask = _load_roi_mask(red_roi_mask)
+    outlines = _roi_outlines(roi_mask, thickness=1)
+    if green_max.shape != red_max.shape:
+        raise ValueError(f"Green/Red max projections differ in shape: {green_max.shape} vs {red_max.shape}")
+
+    lo_g, hi_g = np.nanpercentile(green_max, [1, 99])
+    lo_r, hi_r = np.nanpercentile(red_max, [1, 99])
+    green_rgb = _normalize_to_rgb(green_max, cmap, lo_g, hi_g)
+    red_rgb = _normalize_to_rgb(red_max, cmap, lo_r, hi_r)
+
+    merged = np.zeros((*green_rgb.shape[:2], 3))
+    merged[..., 0] = red_rgb[..., 0]  # R channel from red
+    merged[..., 1] = green_rgb[..., 1]  # G channel from green
+    merged[..., 2] = 0
+
+    green_with_rois = green_rgb.copy()
+    # paint outlines in magenta for visibility
+    outline_color = np.array([1.0, 0.1, 0.85])
+    for rid, mask in outlines.items():
+        green_with_rois[mask] = outline_color
+
+    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    panels = [
+        (green_rgb, "Green max", (lo_g, hi_g)),
+        (red_rgb, "Red max", (lo_r, hi_r)),
+        (merged, "Merged", (min(lo_g, lo_r), max(hi_g, hi_r))),
+        (green_with_rois, "Green max + red ROIs", (lo_g, hi_g)),
+    ]
+    for ax, (img, title, (vmin, vmax)) in zip(axes, panels):
+        ax.imshow(img)
+        ax.axis("off")
+        ax.set_title(title)
+        # Add its own colorbar matching the panel data range
+        mappable = plt.cm.ScalarMappable(norm=colors.Normalize(vmin=vmin, vmax=vmax), cmap=CMAP_NAME)
+        plt.colorbar(mappable, ax=ax, fraction=0.046, pad=0.02)
+
+    plt.tight_layout()
+    out_path = out_dir / f"{stem}_maxproj_panels.png"
+    plt.savefig(out_path, dpi=300)
+    plt.close(fig)
+    print(f"[redroi] Wrote max-projection panels: {out_path}")
 
 
 def load_peak_counts(path: Path, group: str, smoothed: bool, modality: str, recording: str) -> list[dict]:
@@ -534,6 +647,24 @@ def main() -> None:
             print(f"[redroi] Skipping {rec_dir.name}: no red ROI found")
             continue
         print(f"[redroi] Found red ROI for {rec_dir.name}: {red_roi}")
+
+        red_rec_dir = find_partner_red_rec_dir(rec_dir)
+        if red_rec_dir is None:
+            print(f"[redroi] Skipping max-projection panels for {rec_dir.name}: no red recording folder")
+        else:
+            red_manifest = red_rec_dir / "processing_manifest.json"
+            try:
+                green_mc = Path(json.loads(manifest.read_text())["paths"]["motion_corrected_tiff"])
+                red_mc = Path(json.loads(red_manifest.read_text())["paths"]["motion_corrected_tiff"]) if red_manifest.exists() else None
+            except Exception as exc:  # noqa: BLE001
+                green_mc = None
+                red_mc = None
+                print(f"[redroi] Failed reading manifests for {rec_dir.name}: {exc}")
+            if green_mc and green_mc.exists() and red_mc and red_mc.exists():
+                panels_out_dir = rec_dir / "roi_analysis_contract_redroi" / "max_projections"
+                save_max_projection_panels(green_mc, red_mc, red_roi, panels_out_dir, rec_dir.name)
+            else:
+                print(f"[redroi] Missing motion-corrected TIFFs for {rec_dir.name}; skipping max-projection panels")
 
         # Output dir to avoid clobbering green analysis
         out_dir = rec_dir / "roi_analysis_contract_redroi"
