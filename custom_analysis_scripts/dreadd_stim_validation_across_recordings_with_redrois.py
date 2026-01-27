@@ -258,14 +258,16 @@ def save_max_projection_panels(
     for rid, mask in outlines.items():
         green_with_rois[mask] = outline_color
 
-    # Layout: 2x2 image panels + traces on the right (spanning rows)
-    fig = plt.figure(figsize=(16, 7), constrained_layout=True)
-    gs = fig.add_gridspec(2, 3, width_ratios=[1.4, 1.4, 0.8], height_ratios=[1, 1])
-    ax_g = fig.add_subplot(gs[0, 0])
-    ax_r = fig.add_subplot(gs[0, 1])
-    ax_m = fig.add_subplot(gs[1, 0])
-    ax_roi = fig.add_subplot(gs[1, 1])
-    ax_trace = fig.add_subplot(gs[:, 2])
+    # Layout: strict 2-column grid. Left = 2x2 images; Right = ROI activity traces.
+    fig = plt.figure(figsize=(16, 7))
+    outer = fig.add_gridspec(1, 2, width_ratios=[2.3, 1.0], wspace=0.12)
+    left = outer[0].subgridspec(2, 2, hspace=0.08, wspace=0.08)
+    ax_g = fig.add_subplot(left[0, 0])
+    ax_r = fig.add_subplot(left[0, 1])
+    ax_m = fig.add_subplot(left[1, 0])
+    ax_roi = fig.add_subplot(left[1, 1])
+    ax_trace = fig.add_subplot(outer[0, 1])
+
     axes = [ax_g, ax_r, ax_m, ax_roi]
     panels = [
         (green_norm, "mDlx-GCaMP8", (0, 1), "Greens", False),
@@ -275,70 +277,52 @@ def save_max_projection_panels(
     ]
     for ax, (img, title, (vmin, vmax), cmap_panel, is_mask) in zip(axes, panels):
         if is_mask:
-            ax.imshow(img, cmap=cmap_panel, vmin=vmin, vmax=vmax, interpolation="nearest")
+            ax.imshow(img, cmap=cmap_panel, vmin=vmin, vmax=vmax, interpolation="nearest", aspect="equal")
         elif cmap_panel:
-            ax.imshow(img, cmap=cmap_panel, vmin=vmin, vmax=vmax)
+            ax.imshow(img, cmap=cmap_panel, vmin=vmin, vmax=vmax, aspect="equal")
         else:
-            ax.imshow(img, vmin=vmin, vmax=vmax)
+            ax.imshow(img, vmin=vmin, vmax=vmax, aspect="equal")
         ax.axis("off")
-        # rotated title on left like a faux y-label, color-matched
-        if "GCaMP" in title:
-            color_title = TITLE_GREEN
-        elif "hM3" in title:
-            color_title = TITLE_RED
-        else:
-            color_title = "black"
-        ax.text(
-            -0.05,
-            0.5,
-            title,
-            color=color_title,
-            fontsize=12,
-            rotation=90,
-            va="center",
-            ha="right",
-            transform=ax.transAxes,
-        )
-        if is_mask:
-            norm = colors.BoundaryNorm(boundaries=np.arange(vmin, vmax + 1.1), ncolors=cmap_panel.N)
-            mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap_panel)
-        else:
-            cmap_use = cmap_panel if cmap_panel else plt.cm.gray
-            mappable = plt.cm.ScalarMappable(
-                norm=colors.Normalize(vmin=vmin, vmax=vmax),
-                cmap=cmap_use,
-            )
-        plt.colorbar(mappable, ax=ax, fraction=0.046, pad=0.01)
+        color_title = TITLE_GREEN if "GCaMP" in title else TITLE_RED if "hM3" in title else "black"
+        ax.set_title(title, color=color_title, fontsize=12, pad=6)
 
-    # dF/F traces panel: per-ROI, staggered, unsmoothed (sliding_dff)
+    # ROI activity: staggered traces, per-ROI min-max normalized for visualization only.
     if dff_csv and fps and Path(dff_csv).exists():
         try:
             traces_df = pd.read_csv(dff_csv, index_col=0)
             times = np.arange(len(traces_df)) / float(fps)
-            offset_step = 2.0
+            if len(times) == 0 or len(roi_ids) == 0:
+                raise ValueError("No timepoints or ROIs for traces.")
+            offset_step = 1.2
             x_max = times[-1] if len(times) else 1.0
+            label_pad = x_max * 0.02
             for idx, rid in enumerate(roi_ids):
                 col = str(rid)
                 if col not in traces_df.columns:
                     continue
-                y = traces_df[col].to_numpy() + idx * offset_step
+                vec = traces_df[col].to_numpy()
+                vmin = np.nanmin(vec)
+                vmax = np.nanmax(vec)
+                if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax - vmin <= 0:
+                    vec_norm = np.zeros_like(vec, dtype=float)
+                else:
+                    vec_norm = (vec - vmin) / (vmax - vmin)
+                y = vec_norm + idx * offset_step
                 color = roi_colors[idx % len(roi_colors)]
-                ax_trace.plot(times, y, color=color, lw=1.2)
-                if len(times):
-                    ax_trace.text(
-                        x_max * 1.01,
-                        y[-1],
-                        f"ROI {rid}",
-                        color=color,
-                        fontsize=8,
-                        va="center",
-                        ha="left",
-                    )
+                ax_trace.plot(times, y, color=color, lw=1.4)
+                ax_trace.text(
+                    x_max + label_pad,
+                    idx * offset_step,
+                    f"ROI {rid}",
+                    color=color,
+                    fontsize=8.5,
+                    va="center",
+                    ha="left",
+                )
             ax_trace.set_xlim(0, x_max * 1.08 if x_max else 1.0)
-            ax_trace.set_ylim(-offset_step * 0.5, offset_step * (len(roi_ids) + 0.5))
+            ax_trace.set_ylim(-offset_step * 0.4, offset_step * (len(roi_ids) + 0.2))
             ax_trace.set_xticks([])
             ax_trace.set_yticks([])
-            ax_trace.set_title("ROIs dF/F (unsmoothed, 10th pct F0)")
             for spine in ("top", "right", "left", "bottom"):
                 ax_trace.spines[spine].set_visible(False)
         except Exception as exc:  # noqa: BLE001
