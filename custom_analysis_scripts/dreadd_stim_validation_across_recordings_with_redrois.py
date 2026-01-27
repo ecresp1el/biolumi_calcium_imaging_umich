@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import tifffile as tiff
 import shutil
 from matplotlib import colormaps, colors, rcParams
-from scipy.ndimage import binary_dilation, binary_erosion
+from scipy.ndimage import binary_dilation, binary_erosion, gaussian_filter
 from scipy.signal import peak_widths
 from scipy.stats import mannwhitneyu
 import warnings
@@ -38,6 +38,9 @@ COL_MEDIA = "#666666"
 COL_C21 = "#6a1b9a"
 CMAP_NAME = "magma"
 REPRESENTATIVE_DIRNAME = "representative_recordings"
+SMOOTH_SIGMA = 0.6  # Gaussian smoothing on projections to reduce grain/noise
+TITLE_GREEN = "#1b9e77"
+TITLE_RED = "#d62728"
 
 
 def label_group(rec_name: str) -> str:
@@ -92,11 +95,51 @@ def find_partner_red_rec_dir(green_rec_dir: Path) -> Path | None:
     return None
 
 
-def _load_tiff_max(path: Path) -> np.ndarray:
-    """Load a TIFF stack and return max projection as float array."""
+def find_red_projection_file(red_rec_dir: Path) -> Path | None:
+    """Return preferred max-projection TIFF for the paired red recording."""
+    proj_dir = red_rec_dir / "projections"
+    if not proj_dir.exists():
+        return None
+    priority_patterns = [
+        "*RED_MAXPROJ.tif",
+        "*Red_MAXPROJ.tif",
+        "*RED_MAXPROJ.TIF",
+        "*_RED_MAXPROJ.tif",
+        "*MAXPROJ.tif",
+        "*MAXPROJ.TIF",
+    ]
+    for pat in priority_patterns:
+        hits = sorted(proj_dir.glob(pat))
+        if hits:
+            return hits[0]
+    return None
+
+
+def _load_tiff_max(path: Path, channel: int | None = None) -> np.ndarray:
+    """Load a TIFF stack and return max projection as float array.
+
+    Supports multi-channel stacks; will try to detect the channel axis from TIFF
+    metadata (axes string containing 'C'). If `channel` is provided, that
+    channel index (0-based) is selected; otherwise channels are averaged.
+    """
     arr = tiff.imread(path)
-    if arr.ndim == 4 and arr.shape[-1] in (1, 3):
-        arr = arr.mean(axis=-1)
+    channel_axis = None
+    try:
+        with tiff.TiffFile(path) as tf:
+            axes = tf.series[0].axes if tf.series else ""
+        if len(axes) == arr.ndim and "C" in axes:
+            channel_axis = axes.index("C")
+    except Exception:
+        channel_axis = None
+
+    if arr.ndim == 4:
+        if channel_axis is not None and channel_axis != arr.ndim - 1:
+            arr = np.moveaxis(arr, channel_axis, -1)
+        # Now channels are last axis if they existed.
+        if channel is not None and 0 <= channel < arr.shape[-1]:
+            arr = arr[..., channel]
+        else:
+            arr = arr.mean(axis=-1)
     if arr.ndim == 3:
         arr = arr.max(axis=0)
     if arr.ndim != 2:
@@ -140,6 +183,16 @@ def _normalize_to_rgb(arr: np.ndarray, cmap, lo: float | None = None, hi: float 
     return cmap(norm)[..., :3]
 
 
+def _normalize_scalar(arr: np.ndarray, lo: float | None = None, hi: float | None = None) -> np.ndarray:
+    """Normalize array to 0-1 (scalar)."""
+    if lo is None or hi is None:
+        lo, hi = np.nanpercentile(arr, [1, 99])
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo, hi = 0.0, max(1.0, float(np.nanmax(arr)))
+    norm = np.clip((arr - lo) / (hi - lo + 1e-9), 0, 1)
+    return np.nan_to_num(norm, nan=0.0, posinf=1.0, neginf=0.0)
+
+
 def save_max_projection_panels(
     green_mc_tiff: Path,
     red_mc_tiff: Path,
@@ -147,13 +200,29 @@ def save_max_projection_panels(
     out_dir: Path,
     stem: str,
     summary_dir: Path | None = None,
+    dff_csv: Path | None = None,
+    fps: float | None = None,
 ) -> None:
-    """Save high-res PNG with green max, red max, merge, and green with red ROI outlines."""
+    """Save high-res PNG with green max, red max, merge, ROI panels, and dF/F traces.
+
+    Notes on data sources (the “paired files” gotcha):
+    - Green panel uses the green recording’s motion-corrected TIFF (max over time).
+    - Red panel uses the paired *Red* recording. We prefer a precomputed
+      `projections/*RED_MAXPROJ.tif` (or other *_MAXPROJ.tif). If absent, we
+      fall back to the red recording’s motion-corrected TIFF.
+    - ROIs come from the red ROI mask (applied on the green movie for analysis),
+      but the displayed red intensity is always from the red recording’s stack.
+    - dF/F panel plots per-ROI unsmoothed traces (after 10th percentile F0) staggered.
+    """
     cmap = colormaps.get_cmap(CMAP_NAME)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    green_max = _load_tiff_max(green_mc_tiff)
-    red_max = _load_tiff_max(red_mc_tiff)
+    # If stacks are multi-channel (T,Y,X,C), assume channel 0 = green, channel 1 = red.
+    green_max = _load_tiff_max(green_mc_tiff, channel=0)
+    red_max = _load_tiff_max(red_mc_tiff, channel=1)
+    if SMOOTH_SIGMA and SMOOTH_SIGMA > 0:
+        green_max = gaussian_filter(green_max, sigma=SMOOTH_SIGMA)
+        red_max = gaussian_filter(red_max, sigma=SMOOTH_SIGMA)
     roi_mask = _load_roi_mask(red_roi_mask)
     outlines = _roi_outlines(roi_mask, thickness=1)
     if green_max.shape != red_max.shape:
@@ -161,36 +230,124 @@ def save_max_projection_panels(
 
     lo_g, hi_g = np.nanpercentile(green_max, [1, 99])
     lo_r, hi_r = np.nanpercentile(red_max, [1, 99])
-    green_rgb = _normalize_to_rgb(green_max, cmap, lo_g, hi_g)
-    red_rgb = _normalize_to_rgb(red_max, cmap, lo_r, hi_r)
+    green_norm = _normalize_scalar(green_max, lo_g, hi_g)
+    red_norm = _normalize_scalar(red_max, lo_r, hi_r)
+
+    # Display single-channel intensities using intuitive colormaps.
+    green_rgb = plt.colormaps.get_cmap("Greens")(green_norm)[..., :3]
+    red_rgb = plt.colormaps.get_cmap("Reds")(red_norm)[..., :3]
 
     merged = np.zeros((*green_rgb.shape[:2], 3))
-    merged[..., 0] = red_rgb[..., 0]  # R channel from red
-    merged[..., 1] = green_rgb[..., 1]  # G channel from green
+    merged[..., 0] = red_norm  # red channel
+    merged[..., 1] = green_norm  # green channel
     merged[..., 2] = 0
 
+    # Filled ROI map: black background, each ROI a distinct color.
+    roi_ids = sorted(outlines.keys())
+    roi_cmap_base = colormaps.get_cmap("tab20")
+    roi_colors = roi_cmap_base(np.linspace(0, 1, max(len(roi_ids), 1)))[:, :3]
+    roi_colors_with_bg = np.vstack([np.zeros(3), roi_colors])  # index 0 = background
+    roi_cmap = colors.ListedColormap(roi_colors_with_bg)
+    roi_img = np.zeros_like(roi_mask, dtype=float)
+    for idx, rid in enumerate(roi_ids, start=1):
+        roi_img[roi_mask == rid] = idx
+
+    # Green with ROI outlines for quick spatial reference.
     green_with_rois = green_rgb.copy()
-    # paint outlines in magenta for visibility
     outline_color = np.array([1.0, 0.1, 0.85])
     for rid, mask in outlines.items():
         green_with_rois[mask] = outline_color
 
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    # Layout: 2x2 image panels + traces on the right (spanning rows)
+    fig = plt.figure(figsize=(16, 7), constrained_layout=True)
+    gs = fig.add_gridspec(2, 3, width_ratios=[1.4, 1.4, 0.8], height_ratios=[1, 1])
+    ax_g = fig.add_subplot(gs[0, 0])
+    ax_r = fig.add_subplot(gs[0, 1])
+    ax_m = fig.add_subplot(gs[1, 0])
+    ax_roi = fig.add_subplot(gs[1, 1])
+    ax_trace = fig.add_subplot(gs[:, 2])
+    axes = [ax_g, ax_r, ax_m, ax_roi]
     panels = [
-        (green_rgb, "Green max", (lo_g, hi_g)),
-        (red_rgb, "Red max", (lo_r, hi_r)),
-        (merged, "Merged", (min(lo_g, lo_r), max(hi_g, hi_r))),
-        (green_with_rois, "Green max + red ROIs", (lo_g, hi_g)),
+        (green_norm, "mDlx-GCaMP8", (0, 1), "Greens", False),
+        (red_norm, "mDlx-hM3Dq-nlsdTom", (0, 1), "Reds", False),
+        (merged, "Merged", (0, 1), None, False),
+        (roi_img, "nlsdTom ROIs (filled)", (0, len(roi_ids)), roi_cmap, True),
     ]
-    for ax, (img, title, (vmin, vmax)) in zip(axes, panels):
-        ax.imshow(img)
+    for ax, (img, title, (vmin, vmax), cmap_panel, is_mask) in zip(axes, panels):
+        if is_mask:
+            ax.imshow(img, cmap=cmap_panel, vmin=vmin, vmax=vmax, interpolation="nearest")
+        elif cmap_panel:
+            ax.imshow(img, cmap=cmap_panel, vmin=vmin, vmax=vmax)
+        else:
+            ax.imshow(img, vmin=vmin, vmax=vmax)
         ax.axis("off")
-        ax.set_title(title)
-        # Add its own colorbar matching the panel data range
-        mappable = plt.cm.ScalarMappable(norm=colors.Normalize(vmin=vmin, vmax=vmax), cmap=CMAP_NAME)
-        plt.colorbar(mappable, ax=ax, fraction=0.046, pad=0.02)
+        # rotated title on left like a faux y-label, color-matched
+        if "GCaMP" in title:
+            color_title = TITLE_GREEN
+        elif "hM3" in title:
+            color_title = TITLE_RED
+        else:
+            color_title = "black"
+        ax.text(
+            -0.05,
+            0.5,
+            title,
+            color=color_title,
+            fontsize=12,
+            rotation=90,
+            va="center",
+            ha="right",
+            transform=ax.transAxes,
+        )
+        if is_mask:
+            norm = colors.BoundaryNorm(boundaries=np.arange(vmin, vmax + 1.1), ncolors=cmap_panel.N)
+            mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap_panel)
+        else:
+            cmap_use = cmap_panel if cmap_panel else plt.cm.gray
+            mappable = plt.cm.ScalarMappable(
+                norm=colors.Normalize(vmin=vmin, vmax=vmax),
+                cmap=cmap_use,
+            )
+        plt.colorbar(mappable, ax=ax, fraction=0.046, pad=0.01)
 
-    plt.tight_layout()
+    # dF/F traces panel: per-ROI, staggered, unsmoothed (sliding_dff)
+    if dff_csv and fps and Path(dff_csv).exists():
+        try:
+            traces_df = pd.read_csv(dff_csv, index_col=0)
+            times = np.arange(len(traces_df)) / float(fps)
+            offset_step = 2.0
+            x_max = times[-1] if len(times) else 1.0
+            for idx, rid in enumerate(roi_ids):
+                col = str(rid)
+                if col not in traces_df.columns:
+                    continue
+                y = traces_df[col].to_numpy() + idx * offset_step
+                color = roi_colors[idx % len(roi_colors)]
+                ax_trace.plot(times, y, color=color, lw=1.2)
+                if len(times):
+                    ax_trace.text(
+                        x_max * 1.01,
+                        y[-1],
+                        f"ROI {rid}",
+                        color=color,
+                        fontsize=8,
+                        va="center",
+                        ha="left",
+                    )
+            ax_trace.set_xlim(0, x_max * 1.08 if x_max else 1.0)
+            ax_trace.set_ylim(-offset_step * 0.5, offset_step * (len(roi_ids) + 0.5))
+            ax_trace.set_xticks([])
+            ax_trace.set_yticks([])
+            ax_trace.set_title("ROIs dF/F (unsmoothed, 10th pct F0)")
+            for spine in ("top", "right", "left", "bottom"):
+                ax_trace.spines[spine].set_visible(False)
+        except Exception as exc:  # noqa: BLE001
+            ax_trace.text(0.5, 0.5, f"dF/F plot failed:\n{exc}", ha="center", va="center")
+            ax_trace.axis("off")
+    else:
+        ax_trace.text(0.5, 0.5, "dF/F traces unavailable", ha="center", va="center")
+        ax_trace.axis("off")
+
     out_path = out_dir / f"{stem}_maxproj_panels.png"
     plt.savefig(out_path, dpi=300)
     plt.close(fig)
@@ -668,11 +825,14 @@ def main() -> None:
             continue
         print(f"[redroi] Found red ROI for {rec_dir.name}: {red_roi}")
 
+        green_mc: Path | None = None
+        red_source: Path | None = None
         red_rec_dir = find_partner_red_rec_dir(rec_dir)
         if red_rec_dir is None:
             print(f"[redroi] Skipping max-projection panels for {rec_dir.name}: no red recording folder")
         else:
             red_manifest = red_rec_dir / "processing_manifest.json"
+            red_proj = find_red_projection_file(red_rec_dir)
             try:
                 green_mc = Path(json.loads(manifest.read_text())["paths"]["motion_corrected_tiff"])
                 red_mc = Path(json.loads(red_manifest.read_text())["paths"]["motion_corrected_tiff"]) if red_manifest.exists() else None
@@ -680,18 +840,10 @@ def main() -> None:
                 green_mc = None
                 red_mc = None
                 print(f"[redroi] Failed reading manifests for {rec_dir.name}: {exc}")
-            if green_mc and green_mc.exists() and red_mc and red_mc.exists():
-                panels_out_dir = rec_dir / "roi_analysis_contract_redroi" / "max_projections"
-                save_max_projection_panels(
-                    green_mc,
-                    red_mc,
-                    red_roi,
-                    panels_out_dir,
-                    rec_dir.name,
-                    summary_dir=representative_dir,
-                )
-            else:
-                print(f"[redroi] Missing motion-corrected TIFFs for {rec_dir.name}; skipping max-projection panels")
+            if red_proj and red_proj.exists():
+                red_source = red_proj
+            elif red_mc and red_mc.exists():
+                red_source = red_mc
 
         # Output dir to avoid clobbering green analysis
         out_dir = rec_dir / "roi_analysis_contract_redroi"
@@ -718,6 +870,22 @@ def main() -> None:
             metrics_smoothed.extend(
                 summarize_metrics(Path(out.smoothed_peaks_csv), Path(out.smoothed_peak_counts_csv), Path(out.smoothed_dff_csv), group, True, modality, rec_dir.name)
             )
+
+        # Generate panels after analysis so we can also plot dF/F traces.
+        if red_source and green_mc and green_mc.exists():
+            panels_out_dir = rec_dir / "roi_analysis_contract_redroi" / "max_projections"
+            save_max_projection_panels(
+                green_mc,
+                red_source,
+                red_roi,
+                panels_out_dir,
+                rec_dir.name,
+                summary_dir=representative_dir,
+                dff_csv=Path(out.sliding_dff_csv) if out.sliding_dff_csv else None,
+                fps=FPS,
+            )
+        else:
+            print(f"[redroi] Missing projection/motion-corrected TIFFs for {rec_dir.name}; skipping max-projection panels")
 
     df_unsmoothed = pd.DataFrame(rows_counts)
     df_smoothed = pd.DataFrame(rows_counts_smoothed)
