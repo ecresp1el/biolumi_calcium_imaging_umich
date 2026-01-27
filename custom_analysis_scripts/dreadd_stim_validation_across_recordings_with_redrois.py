@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import tifffile as tiff
+import shutil
 from matplotlib import colormaps, colors, rcParams
 from scipy.ndimage import binary_dilation, binary_erosion
 from scipy.signal import peak_widths
@@ -36,6 +37,7 @@ SMOOTH_WINDOW_SEC = 1.0
 COL_MEDIA = "#666666"
 COL_C21 = "#6a1b9a"
 CMAP_NAME = "magma"
+REPRESENTATIVE_DIRNAME = "representative_recordings"
 
 
 def label_group(rec_name: str) -> str:
@@ -78,12 +80,14 @@ def find_partner_red_roi(green_rec_dir: Path) -> Path | None:
 
 def find_partner_red_rec_dir(green_rec_dir: Path) -> Path | None:
     """Heuristic to locate paired red recording directory for a green recording."""
-    base = green_rec_dir.name.replace(" - Green_Confocal - Red", "").replace(" - Green", "")
     parent = green_rec_dir.parent
+    # Use prefix before the first " - Green"
+    base_prefix = green_rec_dir.name.split(" - Green")[0]
     for d in sorted(parent.iterdir()):
         if not d.is_dir():
             continue
-        if base in d.name and "red" in d.name.lower():
+        name_lower = d.name.lower()
+        if base_prefix in d.name and "red" in name_lower:
             return d
     return None
 
@@ -136,7 +140,14 @@ def _normalize_to_rgb(arr: np.ndarray, cmap, lo: float | None = None, hi: float 
     return cmap(norm)[..., :3]
 
 
-def save_max_projection_panels(green_mc_tiff: Path, red_mc_tiff: Path, red_roi_mask: Path, out_dir: Path, stem: str) -> None:
+def save_max_projection_panels(
+    green_mc_tiff: Path,
+    red_mc_tiff: Path,
+    red_roi_mask: Path,
+    out_dir: Path,
+    stem: str,
+    summary_dir: Path | None = None,
+) -> None:
     """Save high-res PNG with green max, red max, merge, and green with red ROI outlines."""
     cmap = colormaps.get_cmap(CMAP_NAME)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -184,6 +195,11 @@ def save_max_projection_panels(green_mc_tiff: Path, red_mc_tiff: Path, red_roi_m
     plt.savefig(out_path, dpi=300)
     plt.close(fig)
     print(f"[redroi] Wrote max-projection panels: {out_path}")
+    if summary_dir:
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = summary_dir / out_path.name
+        shutil.copy2(out_path, summary_path)
+        print(f"[redroi] Copied representative panel to {summary_path}")
 
 
 def load_peak_counts(path: Path, group: str, smoothed: bool, modality: str, recording: str) -> list[dict]:
@@ -632,6 +648,10 @@ def main() -> None:
         smooth_window_seconds=SMOOTH_WINDOW_SEC,
     )
 
+    out_dir_root = PROJECT_ROOT / "roi_analysis_contract_summary_redroi"
+    out_dir_root.mkdir(exist_ok=True)
+    representative_dir = out_dir_root / REPRESENTATIVE_DIRNAME
+
     rows_counts: list[dict] = []
     rows_counts_smoothed: list[dict] = []
     metrics_unsmoothed: list[dict] = []
@@ -662,7 +682,14 @@ def main() -> None:
                 print(f"[redroi] Failed reading manifests for {rec_dir.name}: {exc}")
             if green_mc and green_mc.exists() and red_mc and red_mc.exists():
                 panels_out_dir = rec_dir / "roi_analysis_contract_redroi" / "max_projections"
-                save_max_projection_panels(green_mc, red_mc, red_roi, panels_out_dir, rec_dir.name)
+                save_max_projection_panels(
+                    green_mc,
+                    red_mc,
+                    red_roi,
+                    panels_out_dir,
+                    rec_dir.name,
+                    summary_dir=representative_dir,
+                )
             else:
                 print(f"[redroi] Missing motion-corrected TIFFs for {rec_dir.name}; skipping max-projection panels")
 
@@ -701,8 +728,6 @@ def main() -> None:
     metrics_unsmoothed_df = _clean_groups(metrics_unsmoothed_df)
     metrics_smoothed_df = _clean_groups(metrics_smoothed_df)
 
-    out_dir_root = PROJECT_ROOT / "roi_analysis_contract_summary_redroi"
-    out_dir_root.mkdir(exist_ok=True)
     df_unsmoothed.to_csv(out_dir_root / "redroi_peak_counts_unsmoothed.csv", index=False)
     df_smoothed.to_csv(out_dir_root / "redroi_peak_counts_smoothed.csv", index=False)
     metrics_unsmoothed_df.to_csv(out_dir_root / "redroi_metrics_unsmoothed.csv", index=False)
